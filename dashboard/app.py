@@ -1,27 +1,28 @@
 """Streamlit Dashboard Entrypoint for KoRo Analytics Engineering POC.
 
-Injects KoroAdapter into the reusable lakehouse-cockpit-core microkernel.
+Injects KoroAdapter into the reusable lakehouse-cockpit-core (cockpit_core) microkernel.
 """
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_SUBMODULE_DIR = os.path.join(ROOT_DIR, "cockpit_core")
-_SIBLING_DIR = os.path.abspath(os.path.join(ROOT_DIR, "..", "lakehouse-cockpit-core"))
-COCKPIT_CORE_DIR = os.environ.get(
-    "COCKPIT_CORE_PATH",
-    _SUBMODULE_DIR if os.path.isdir(_SUBMODULE_DIR) else _SIBLING_DIR,
-)
-
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
-if COCKPIT_CORE_DIR not in sys.path:
-    sys.path.insert(0, COCKPIT_CORE_DIR)
 
-from engine import launch_cockpit_app
+# Ensure git submodule cockpit_core is initialized on Streamlit Cloud
+_COCKPIT_INIT = os.path.join(ROOT_DIR, "cockpit_core", "__init__.py")
+if not os.path.exists(_COCKPIT_INIT):
+    subprocess.run(
+        ["git", "submodule", "update", "--init", "--recursive"],
+        cwd=ROOT_DIR,
+        check=False,
+    )
+
+from cockpit_core import launch_cockpit_app
 
 from koro_adapter import KoroAdapter
 

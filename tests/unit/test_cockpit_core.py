@@ -11,18 +11,13 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-# Add parent directory so lakehouse_cockpit_core can be imported as a package or module
-COCKPIT_CORE_PARENT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-COCKPIT_CORE_DIR = os.path.join(COCKPIT_CORE_PARENT, "lakehouse-cockpit-core")
-if COCKPIT_CORE_DIR not in sys.path:
-    sys.path.insert(0, COCKPIT_CORE_DIR)
-
-from adapter import (
+from cockpit_core.adapter import (
     AnalyticalSpecContract,
     BaseCockpitAdapter,
     KPICardSpec,
     OnDemandInsightResult,
 )
+from dashboard.app import main as dashboard_main
 
 
 class LegacyMinimalAdapter(BaseCockpitAdapter):

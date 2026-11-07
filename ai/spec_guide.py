@@ -15,16 +15,10 @@ import pandas as pd
 import plotly.express as px
 
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-_SUBMODULE_DIR = os.path.join(_ROOT_DIR, "cockpit_core")
-_SIBLING_DIR = os.path.abspath(os.path.join(_ROOT_DIR, "..", "lakehouse-cockpit-core"))
-COCKPIT_CORE_DIR = os.environ.get(
-    "COCKPIT_CORE_PATH",
-    _SUBMODULE_DIR if os.path.isdir(_SUBMODULE_DIR) else _SIBLING_DIR,
-)
-if COCKPIT_CORE_DIR not in sys.path:
-    sys.path.insert(0, COCKPIT_CORE_DIR)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
 
-from adapter import AnalyticalSpecContract, OnDemandInsightResult
+from cockpit_core.adapter import AnalyticalSpecContract, OnDemandInsightResult
 
 PRESET_TRIGGERS = {
     "🌰 1kg Bulk Packaging Return Diagnosis": "bulk_returns",

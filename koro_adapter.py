@@ -16,25 +16,19 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-# Ensure lakehouse-cockpit-core is importable (submodule cockpit_core first, sibling fallback)
+# Ensure project root is on sys.path so cockpit_core package is importable
 _ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
-_SUBMODULE_DIR = os.path.join(_ROOT_DIR, "cockpit_core")
-_SIBLING_DIR = os.path.abspath(os.path.join(_ROOT_DIR, "..", "lakehouse-cockpit-core"))
-COCKPIT_CORE_DIR = os.environ.get(
-    "COCKPIT_CORE_PATH",
-    _SUBMODULE_DIR if os.path.isdir(_SUBMODULE_DIR) else _SIBLING_DIR,
-)
-if COCKPIT_CORE_DIR not in sys.path:
-    sys.path.insert(0, COCKPIT_CORE_DIR)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
 
-from adapter import (
+from cockpit_core.adapter import (
     AnalyticalSpecContract,
     BaseCockpitAdapter,
     KPICardSpec,
     MedallionTabSpec,
     OnDemandInsightResult,
 )
-from components.sql_expander import render_sql_snippet_module
+from cockpit_core.components.sql_expander import render_sql_snippet_module
 
 from ingestion.synthetic_medallion import build_koro_medallion_data
 
