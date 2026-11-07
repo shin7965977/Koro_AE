@@ -34,7 +34,7 @@ PRESET_TRIGGERS = {
 
 
 def classify_scenario_intent(user_query: str) -> str:
-    """Classify user query into a governed analytical scenario key via keyword scoring."""
+    """Classify user query into a governed analytical scenario key (Live Gemini + Keyword Fallback)."""
     if user_query in PRESET_TRIGGERS:
         return PRESET_TRIGGERS[user_query]
 
@@ -93,7 +93,32 @@ def classify_scenario_intent(user_query: str) -> str:
         ),
     }
     best_scenario = max(scores, key=lambda k: scores[k])
-    return best_scenario if scores[best_scenario] > 0 else "bulk_returns"
+    if scores[best_scenario] > 0:
+        return best_scenario
+
+    # Optional Live Gemini Routing when GEMINI_API_KEY is configured and query is novel
+    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if api_key and not api_key.startswith("your_"):
+        try:
+            from google import genai
+
+            client = genai.Client(api_key=api_key)
+            resp = client.models.generate_content(
+                model=os.getenv("LLM_MODEL", "gemini-2.0-flash"),
+                contents=(
+                    "Classify the following e-commerce analytics question into exactly one key: "
+                    "'bulk_returns', 'category_margin', or 'inventory_health'. "
+                    f"Question: {user_query}"
+                ),
+            )
+            text = (resp.text or "").strip().lower()
+            for valid_key in ("bulk_returns", "category_margin", "inventory_health"):
+                if valid_key in text:
+                    return valid_key
+        except Exception:
+            pass
+
+    return "bulk_returns"
 
 
 def _build_round1_clarification(scenario_key: str, is_en: bool) -> str:
