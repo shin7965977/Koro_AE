@@ -229,6 +229,89 @@ class KoroAdapter(BaseCockpitAdapter):
                 is_en=is_en,
             )
 
+        def render_looker_embedded_view(
+            data_dict: dict[str, pd.DataFrame], is_en: bool, adapter: Any
+        ) -> None:
+            import streamlit.components.v1 as components
+
+            st.markdown(
+                "### 📊 Looker Enterprise Embedded View"
+                if is_en
+                else "### 📊 Looker 企業級嵌入式儀表板"
+            )
+            st.caption(
+                "🌐 **Unified Semantic Layer**: Looker directly models BigQuery Gold Marts via **LookML**, providing a single source of truth for both traditional BI and AI applications."
+                if is_en
+                else "🌐 **全公司統一語意層**：Looker 透過 **LookML** 直接對接 BigQuery 金牌層，為傳統 BI 報表與 AI 應用提供統一的商業指標口徑。"
+            )
+
+            # Option to load a live Looker / Looker Studio URL
+            default_looker_url = os.getenv("LOOKER_EMBED_URL", "")
+            looker_url = st.text_input(
+                "Looker Embed URL (Optional — Paste your Looker / Looker Studio Dashboard link):"
+                if is_en
+                else "Looker 嵌入網址（選填 — 可貼上您的 Looker 或 Looker Studio 報表連結）：",
+                value=default_looker_url,
+                placeholder="https://lookerstudio.google.com/embed/reporting/...",
+                help="Supports Looker Signed SSO Embed or Looker Studio Public Embed URLs",
+            )
+
+            if looker_url.strip():
+                st.info(f"🔗 Embedding Looker dashboard from `{looker_url.strip()}`...")
+                components.iframe(src=looker_url.strip(), height=750, scrolling=True)
+            else:
+                # High-fidelity Looker Semantic View with LookML Explorer
+                l_col1, l_col2 = st.columns([6, 4])
+                with l_col1:
+                    st.markdown(
+                        "#### 🏛️ Looker Semantic View: `mart_product_performance`"
+                        if is_en
+                        else "#### 🏛️ Looker 語意模型視圖：`mart_product_performance`"
+                    )
+                    df = data_dict.get("mart_product_performance", pd.DataFrame())
+                    if not df.empty:
+                        # Emulate Looker tabular visualization with formatted numbers
+                        looker_table = df[[
+                            "product_name",
+                            "category_name",
+                            "packaging_size",
+                            "sold_units",
+                            "returned_units",
+                            "return_rate_pct",
+                            "net_revenue_eur",
+                            "net_margin_pct",
+                        ]].copy()
+                        looker_table.columns = [
+                            "Product Name",
+                            "Category",
+                            "Packaging Size",
+                            "Sold Units",
+                            "Returned Units",
+                            "Return Rate (%)",
+                            "Net Revenue (€)",
+                            "Net Margin (%)",
+                        ]
+                        st.dataframe(looker_table, use_container_width=True, height=380)
+
+                with l_col2:
+                    st.markdown(
+                        "#### 📜 LookML Model Definition"
+                        if is_en
+                        else "#### 📜 LookML 語意模型原始碼"
+                    )
+                    lookml_path = os.path.join(
+                        os.path.dirname(__file__),
+                        "warehouse",
+                        "lookml",
+                        "mart_product_performance.view.lkml",
+                    )
+                    if os.path.exists(lookml_path):
+                        with open(lookml_path, encoding="utf-8") as f:
+                            lookml_content = f.read()
+                        st.code(lookml_content, language="yaml")
+                    else:
+                        st.code("view: mart_product_performance { ... }", language="yaml")
+
         return {
             "gold": {
                 "tabs": [
@@ -237,7 +320,13 @@ class KoroAdapter(BaseCockpitAdapter):
                         title_en="🥇 SKU & Category Performance Mart",
                         title_zh="🥇 商品與品類表現寬表 (Gold Mart)",
                         render_content=render_gold_product_mart,
-                    )
+                    ),
+                    MedallionTabSpec(
+                        tab_id="gold_looker_embed",
+                        title_en="📊 Looker Enterprise View",
+                        title_zh="📊 Looker 企業級嵌入視圖",
+                        render_content=render_looker_embedded_view,
+                    ),
                 ]
             },
             "silver": {
