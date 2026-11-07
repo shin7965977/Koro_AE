@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# dbt
+warehouse/dbt_project/target/
+warehouse/dbt_project/dbt_packages/
+warehouse/dbt_project/logs/
+
+# Ingestion / Local Data / Logs
+ingestion_logs/
+*.log
+data/raw/
+data/processed/
+
+# Testing & Evaluation
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Keep documentation source dump out of commits if needed
+doc_content.txt
