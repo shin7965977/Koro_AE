@@ -9,9 +9,11 @@ import os
 import sys
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+_SUBMODULE_DIR = os.path.join(ROOT_DIR, "cockpit_core")
+_SIBLING_DIR = os.path.abspath(os.path.join(ROOT_DIR, "..", "lakehouse-cockpit-core"))
 COCKPIT_CORE_DIR = os.environ.get(
     "COCKPIT_CORE_PATH",
-    os.path.abspath(os.path.join(ROOT_DIR, "..", "lakehouse-cockpit-core")),
+    _SUBMODULE_DIR if os.path.isdir(_SUBMODULE_DIR) else _SIBLING_DIR,
 )
 
 if ROOT_DIR not in sys.path:
