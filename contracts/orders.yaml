@@ -1,0 +1,38 @@
+entity: orders
+version: "1.0"
+description: "Order header transactions extracted from Shopware 6 API (synthetic demonstration records)."
+fields:
+  - name: order_id
+    type: string
+    required: true
+    unique: true
+    description: "Unique Shopware 6 order header ID"
+  - name: order_date
+    type: date
+    required: true
+    description: "ISO date when the order was placed"
+  - name: market_country
+    type: string
+    required: true
+    description: "ISO country code of order destination (DE, AT, FR, NL)"
+  - name: customer_segment
+    type: string
+    required: true
+    description: "Anonymized cohort segment (D2C Repeat, D2C First-Time, B2B Office)"
+  - name: order_gross_eur
+    type: decimal
+    required: true
+    description: "Order gross amount before discounts and refunds"
+  - name: discount_eur
+    type: decimal
+    required: true
+    description: "Promotional voucher discount applied to order"
+  - name: order_net_eur
+    type: decimal
+    required: true
+    description: "Order net revenue after discounts and refunds"
+metadata:
+  source: shopware_6_api_synthetic
+  owner: analytics_engineering
+  contains_pii: false
+  gdpr_classification: anonymized_transactional

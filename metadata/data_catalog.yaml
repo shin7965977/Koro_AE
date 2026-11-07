@@ -1,0 +1,30 @@
+catalog_version: "1.0"
+warehouse: "koro_lakehouse"
+layers:
+  gold:
+    - table: "koro_marts.mart_product_performance"
+      grain: "product_id (1 row per SKU)"
+      upstream_models: ["int_order_items_enriched", "int_returns_enriched", "stg_products"]
+      owner: "analytics_engineering"
+      dbt_tested: true
+      contains_pii: false
+    - table: "koro_marts.mart_category_daily"
+      grain: "order_date, category_name"
+      upstream_models: ["fct_orders", "int_order_items_enriched"]
+      owner: "analytics_engineering"
+      dbt_tested: true
+      contains_pii: false
+  silver:
+    - table: "koro_staging.int_returns_enriched"
+      grain: "return_id"
+      upstream_models: ["raw_returns", "stg_products"]
+      owner: "analytics_engineering"
+      dbt_tested: true
+      contains_pii: false
+  bronze:
+    - table: "koro_raw.raw_shopware_orders"
+      grain: "order_id"
+      upstream_models: ["shopware_6_api"]
+      owner: "data_engineering"
+      dbt_tested: true
+      contains_pii: false

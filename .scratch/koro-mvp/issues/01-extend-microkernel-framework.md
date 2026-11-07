@@ -5,9 +5,9 @@ Upgrade `lakehouse-cockpit-core` while maintaining 100% backward compatibility s
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Define `AnalyticalSpecContract` and `OnDemandInsightResult` dataclasses in `lakehouse-cockpit-core/adapter.py` and add default hook methods on `BaseCockpitAdapter`.
-- [ ] Render the conditional `On-Demand Insight Panel` beneath the KPI grid in `lakehouse-cockpit-core/engine.py` with Executive Takeaway card, Plotly chart, and 3-Layer Traceability Inspector (`Executed SQL`, `Metric Lineage & Dictionary`, `Data Snippet`).
-- [ ] Add `🔄 New Inquiry` reset button and 2-round `AnalyticalSpecContract` confirmation card + `✅ Confirm & Generate Insight` button in `lakehouse-cockpit-core/components/ai_drawer.py`.
-- [ ] Verify backward compatibility and new contract lifecycle via unit tests.
+- [x] Define `AnalyticalSpecContract` and `OnDemandInsightResult` dataclasses in `lakehouse-cockpit-core/adapter.py` and add default hook methods on `BaseCockpitAdapter`.
+- [x] Render the conditional `On-Demand Insight Panel` beneath the KPI grid in `lakehouse-cockpit-core/engine.py` with Executive Takeaway card, Plotly chart, and 3-Layer Traceability Inspector (`Executed SQL`, `Metric Lineage & Dictionary`, `Data Snippet`).
+- [x] Add `🔄 New Inquiry` reset button and 2-round `AnalyticalSpecContract` confirmation card + `✅ Confirm & Generate Insight` button in `lakehouse-cockpit-core/components/ai_drawer.py`.
+- [x] Verify backward compatibility and new contract lifecycle via unit tests.

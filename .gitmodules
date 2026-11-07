@@ -1,0 +1,3 @@
+[submodule "cockpit_core"]
+	path = cockpit_core
+	url = https://github.com/shin7965977/lakehouse-cockpit-core.git
