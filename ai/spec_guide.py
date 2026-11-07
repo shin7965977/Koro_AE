@@ -138,6 +138,74 @@ def classify_scenario(query: str) -> str | None:
     return None
 
 
+def _is_general_or_language_query(query: str) -> tuple[bool, str]:
+    """Detect general inquiries, language checks, or identity questions and reply adaptively."""
+    q = query.strip().lower()
+
+    # Language capability or switch query
+    if any(kw in q for kw in ["說中文", "講中文", "會說中文", "能說中文", "中文嗎", "speak chinese", "chinese"]):
+        return True, (
+            "當然可以！我是 **KoRo 分析工程智能協作助理**（由 Gemini 驅動），完全支援繁體中文與英文對話。\n\n"
+            "我可以協助您：\n"
+            "- 🔍 **指標與品類診斷**：深入分析全站 4 大品類（堅果、果乾、超級食物、零食）之營收、退貨率與庫存天數。\n"
+            "- 📐 **語意口徑對齊**：對齊分子、分母與 `semantic/business_rules.yaml` 商業邏輯。\n"
+            "- 🚀 **點擊上方【啟動 AE 需求交付全流程】**：一步步引導您完成 6 大分析工程生命週期，最後產出可自由切換維度與度量的 Looker 互動圖表！\n\n"
+            "請問您想先了解哪一項商業問題？"
+        )
+
+    # Bot identity / capability query
+    if any(kw in q for kw in ["你是誰", "你的功能", "你能做什麼", "who are you", "what can you do"]):
+        return True, (
+            "您好！我是 **KoRo 分析工程智能協作助理（Analytics Engineering Copilot）**。\n\n"
+            "我的核心職責是協助業務主管與利害關係人，將模糊的商業需求轉化為治理完備的數據資產：\n"
+            "1. **湖倉全量感知**：串聯 Bronze (Shopware)、Silver (品質退貨) 與 Gold (商品營運 Mart)。\n"
+            "2. **語意合約鎖定**：確保跨部門指標（如退貨率、淨營收）不打架。\n"
+            "3. **LookML 建模與自訂圖表**：即時產出可由您自由拖拉維度與度量的 Looker 視覺化。\n\n"
+            "歡迎直接點擊上方的建議問題，或輸入您想分析的主題！"
+        )
+
+    return False, ""
+
+
+def _call_gemini_with_grounding(
+    user_query: str,
+    chat_history: list[dict[str, str]],
+    is_en: bool,
+    api_key: str,
+) -> str | None:
+    """Call Google GenAI SDK with KoRo Medallion and semantic business rules grounding."""
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=api_key)
+        lang_str = "English" if is_en else "Traditional Chinese (繁體中文)"
+
+        system_instruction = (
+            f"You are the KoRo Analytics Engineering Copilot, a senior AE pair programming with stakeholders. "
+            f"Always reply in {lang_str}. "
+            f"Grounding Data Context: "
+            f"- 12 Core KoRo SKUs: Organic Cashews Bulk 1kg (KORO-NUT-001, 5.2% return rate outlier due to vacuum packaging defect), "
+            f"Roasted Pistachios 1kg, Crunchy Almond Butter 500g, Creamy Peanut Butter 500g, Whole Macadamia Nuts 1kg (stockout risk, 0 days of supply), "
+            f"Brooks Mango Strips 1kg, Medjool Dates 1kg, Freeze-Dried Strawberries 500g, Organic Chia Seeds 1kg, Organic Hemp Seeds 500g, "
+            f"Vegan Protein Bar 250g, Dark Chocolate Pretzel Bites 500g. "
+            f"- Categories: Nuts & Butters, Dried Fruits, Superfoods & Seeds, Snacks & Bars. "
+            f"- Governed Formulas (semantic/business_rules.yaml): "
+            f"  * Gross Revenue: SUM(gross_revenue_eur) "
+            f"  * Net Revenue: SUM(gross_revenue_eur - discount_eur - refunded_eur) "
+            f"  * Return Rate (%): ROUND(SUM(returned_units) * 100.0 / NULLIF(SUM(sold_units), 0), 2) "
+            f"  * Net Margin (%): ROUND((SUM(net_revenue_eur) - SUM(cogs_eur)) * 100.0 / NULLIF(SUM(net_revenue_eur), 0), 2) "
+            f"Provide insightful, professional, and clear answers. Never guess or hallucinate metrics."
+        )
+
+        resp = client.models.generate_content(
+            model=os.getenv("LLM_MODEL", "gemini-2.0-flash"),
+            contents=f"{system_instruction}\n\nUser Query: {user_query}",
+        )
+        return resp.text
+    except Exception:
+        return None
+
+
 def process_conversational_copilot_turn(
     user_query: str,
     chat_history: list[dict[str, str]] | None = None,
@@ -145,22 +213,39 @@ def process_conversational_copilot_turn(
     is_en: bool = True,
     current_round: int = 0,
     session_context: dict[str, Any] | None = None,
+    api_key: str = "",
 ) -> dict[str, Any]:
     """Execute conversational turn with true semantic understanding, round management, and open exploration."""
+    import re
+
     chat_hist = chat_history or []
     ctx = session_context or {}
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    effective_key = api_key or os.getenv("GEMINI_API_KEY", "").strip()
 
-    # 1. Handle open exploration queries ("沒想法 / 有什麼報表資訊 / what data is available")
-    if _is_exploration_query(user_query):
+    # 1. Multilingual Adaptive Detection (Detect Chinese characters dynamically)
+    has_chinese = bool(re.search(r"[\u4e00-\u9fff]", user_query))
+    effective_en = False if has_chinese else is_en
+
+    # 2. Handle General & Language Capability Questions
+    is_gen, gen_reply = _is_general_or_language_query(user_query)
+    if is_gen:
         return {
-            "reply": _build_catalog_exploration_response(is_en=is_en),
+            "reply": gen_reply,
             "spec_contract": None,
             "scenario_key": None,
             "next_round": 0,
         }
 
-    # 2. Determine target scenario
+    # 3. Handle open exploration queries ("沒想法 / 有什麼報表資訊 / what data is available")
+    if _is_exploration_query(user_query):
+        return {
+            "reply": _build_catalog_exploration_response(is_en=effective_en),
+            "spec_contract": None,
+            "scenario_key": None,
+            "next_round": 0,
+        }
+
+    # 4. Determine target scenario
     scenario_key = ctx.get("scenario_key") or classify_scenario(user_query)
 
     # Check for confirmation in ongoing clarification from history or arguments
@@ -178,11 +263,27 @@ def process_conversational_copilot_turn(
         elif "inventory" in last_assistant_msg.lower() or "庫存" in last_assistant_msg:
             scenario_key = "inventory_health"
 
-    # Fallback to default scenario if still undetermined
-    if not scenario_key:
-        scenario_key = "bulk_returns"
+    # If user has an active Gemini key and query is conversational
+    if effective_key and not effective_key.startswith("your_") and not scenario_key:
+        llm_reply = _call_gemini_with_grounding(user_query, chat_hist, effective_en, effective_key)
+        if llm_reply:
+            return {
+                "reply": llm_reply,
+                "spec_contract": None,
+                "scenario_key": None,
+                "next_round": 0,
+            }
 
-    # Check if this turn locks the spec
+    # If no scenario is identified and not in test context, invite exploration
+    if not scenario_key:
+        return {
+            "reply": _build_catalog_exploration_response(is_en=effective_en),
+            "spec_contract": None,
+            "scenario_key": None,
+            "next_round": 0,
+        }
+
+    # 5. Check if this turn locks the spec
     is_confirmation_text = any(
         w in user_query.lower()
         for w in [
@@ -201,7 +302,7 @@ def process_conversational_copilot_turn(
             f"All metrics, dimensions, and filter boundaries have been aligned with `semantic/business_rules.yaml`.\n\n"
             f"👉 Please review the **Analytical Spec Card** below and click **Confirm Spec & Generate Compliant Chart** "
             f"to render the interactive chart and 3-Layer Code Inspector on the main dashboard."
-            if is_en
+            if effective_en
             else f"✅ **第二輪 — 分析規格已鎖定 (`{spec.spec_id}`)**\n\n"
             f"所有維度、指標與篩選邊界已對齊 `semantic/business_rules.yaml` 官方口徑。\n\n"
             f"👉 請檢視下方的 **分析規格確認卡**，並點擊 **確認規格並生成合規可追蹤圖表**，主畫面將立即繪製圖表與 3 層程式碼可觀測抽屜。"
@@ -214,10 +315,10 @@ def process_conversational_copilot_turn(
         }
     else:
         # Socratic Clarification (Round 1)
-        clarification_msg = _build_scope_clarification(scenario_key, is_en=is_en)
+        clarification_msg = _build_scope_clarification(scenario_key, is_en=effective_en)
         prefix = (
             f"🔍 **Round 1/2 — Socratic Scope Clarification ({scenario_key})**\n\n"
-            if is_en
+            if effective_en
             else f"🔍 **第一輪 — Socratic 口徑釐清 ({scenario_key})**\n\n"
         )
         return {

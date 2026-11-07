@@ -405,6 +405,7 @@ class KoroAdapter(BaseCockpitAdapter):
     ) -> dict[str, Any]:
         from ai.spec_guide import process_conversational_copilot_turn
 
+        api_key: str = kwargs.get("api_key", "")
         return process_conversational_copilot_turn(
             user_query=user_query,
             chat_history=chat_history or [],
@@ -412,6 +413,7 @@ class KoroAdapter(BaseCockpitAdapter):
             is_en=is_en,
             current_round=current_round,
             session_context=session_context or {},
+            api_key=api_key,
         )
 
     def compile_spec_to_insight(

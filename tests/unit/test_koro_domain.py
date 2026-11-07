@@ -135,3 +135,23 @@ def test_sql_sandbox_execution_and_finops_protection() -> None:
     # Destructive DROP command must be blocked
     with pytest.raises(ValueError, match="Security Alert"):
         adapter.execute_custom_sql("DROP TABLE mart_product_performance", data)
+
+
+def test_multilingual_adaptive_and_language_capability_inquiry() -> None:
+    """Verify system handles '能說中文嗎' and '你是誰' politely in Traditional Chinese without forcing bulk_returns."""
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
+
+    # Query from user's screenshot
+    res = adapter.handle_spec_inquiry_turn(user_query="能說中文嗎", chat_history=[], data_dict=data, is_en=True)
+    assert res["spec_contract"] is None
+    assert res["next_round"] == 0
+    assert "繁體中文" in res["reply"] or "當然可以" in res["reply"]
+    # Must NOT force bulk_returns
+    assert "Bulk Packaging Returns" not in res["reply"]
+    assert "Round 1/2" not in res["reply"]
+
+    # Identity question
+    res2 = adapter.handle_spec_inquiry_turn(user_query="你是誰", chat_history=[], data_dict=data, is_en=True)
+    assert res2["spec_contract"] is None
+    assert "分析工程智能協作助理" in res2["reply"]
