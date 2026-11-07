@@ -37,14 +37,21 @@ def _is_exploration_query(query: str) -> bool:
         "有什麼報表",
         "有哪些資料",
         "有什麼資料",
+        "有哪些數據",
+        "有什麼數據",
         "有哪些資訊",
         "有什麼資訊",
         "報表資訊",
         "現在報表",
+        "品類目錄",
+        "商品目錄",
+        "有哪些目錄",
         "no idea",
         "what reports",
         "what data is available",
         "what data do we have",
+        "what data and catalog categories are currently available",
+        "catalog categories",
         "what can i do",
     ]
     if any(trigger in q for trigger in explicit_explorations):
@@ -199,11 +206,14 @@ def _call_gemini_with_grounding(
     chat_history: list[dict[str, str]],
     is_en: bool,
     api_key: str,
-) -> str | None:
-    """Call Google GenAI SDK with KoRo Medallion and semantic business rules grounding."""
+) -> tuple[str | None, str | None]:
+    """Call Google GenAI SDK with multi-tier model fallback: gemini-3.8-flash -> 3.6-flash -> 3.5-flash-lite."""
     try:
         from google import genai
+    except ImportError as e:
+        return None, f"google-genai package not installed: {e}"
 
+    try:
         client = genai.Client(api_key=api_key)
         lang_str = "English" if is_en else "Traditional Chinese (繁體中文)"
 
@@ -221,16 +231,38 @@ def _call_gemini_with_grounding(
             f"  * Net Revenue: SUM(gross_revenue_eur - discount_eur - refunded_eur) "
             f"  * Return Rate (%): ROUND(SUM(returned_units) * 100.0 / NULLIF(SUM(sold_units), 0), 2) "
             f"  * Net Margin (%): ROUND((SUM(net_revenue_eur) - SUM(cogs_eur)) * 100.0 / NULLIF(SUM(net_revenue_eur), 0), 2) "
-            f"Provide insightful, professional, and clear answers. Never guess or hallucinate metrics."
+            f"Behavior Guidelines: "
+            f"- If the user asks open questions or non-domain questions (e.g. general knowledge, politics, greeting), answer politely and concisely, "
+            f"and gently guide them back to KoRo Lakehouse analytics and metrics. "
+            f"- Provide insightful, professional, and clear answers. Never guess or hallucinate metrics."
         )
 
-        resp = client.models.generate_content(
-            model=os.getenv("LLM_MODEL", "gemini-2.0-flash"),
-            contents=f"{system_instruction}\n\nUser Query: {user_query}",
-        )
-        return resp.text
-    except Exception:
-        return None
+        raw_candidates = [
+            os.getenv("LLM_MODEL", "gemini-3.8-flash"),
+            "gemini-3.8-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+        ]
+        candidate_models = list(dict.fromkeys(raw_candidates))
+
+        last_err = ""
+        for model_name in candidate_models:
+            try:
+                resp = client.models.generate_content(
+                    model=model_name,
+                    contents=f"{system_instruction}\n\nUser Query: {user_query}",
+                )
+                if resp and getattr(resp, "text", None):
+                    return resp.text, None
+            except Exception as exc:
+                last_err = f"[{model_name}]: {exc}"
+                continue
+
+        return None, last_err or "All candidate models failed to respond"
+    except Exception as exc:
+        return None, f"Client initialization error: {exc}"
 
 
 def process_conversational_copilot_turn(
@@ -290,25 +322,52 @@ def process_conversational_copilot_turn(
         elif "inventory" in last_assistant_msg.lower() or "庫存" in last_assistant_msg:
             scenario_key = "inventory_health"
 
-    # If user has an active Gemini key and query is conversational
-    if effective_key and not effective_key.startswith("your_") and not scenario_key:
-        llm_reply = _call_gemini_with_grounding(user_query, chat_hist, effective_en, effective_key)
-        if llm_reply:
+    # 5. If no scenario is identified, route to Gemini 3.8 Flash multi-tier hierarchy
+    if not scenario_key:
+        if effective_key and not effective_key.startswith("your_"):
+            llm_reply, err_msg = _call_gemini_with_grounding(
+                user_query, chat_hist, effective_en, effective_key
+            )
+            if llm_reply:
+                return {
+                    "reply": llm_reply,
+                    "spec_contract": None,
+                    "scenario_key": None,
+                    "next_round": 0,
+                }
+            err_detail = err_msg or "Unknown error calling Gemini API"
+            error_reply = (
+                f"⚠️ **Gemini Copilot Error**: Unable to complete request using candidate models "
+                f"(`gemini-3.8-flash` → `gemini-3.6-flash` → `gemini-3.5-flash-lite`).\n\n"
+                f"**Details**: `{err_detail}`\n\n"
+                f"👉 Please verify your Gemini API key in the top right, or check network / quota availability."
+                if effective_en
+                else f"⚠️ **Gemini 協作助理連線異常**：無法透過候選模型階梯（`gemini-3.8-flash` → `gemini-3.6-flash` → `gemini-3.5-flash-lite`）完成對話。\n\n"
+                f"**錯誤詳情**：`{err_detail}`\n\n"
+                f"👉 請確認右上角輸入的 Google AI Studio API Key 是否有效，或檢查網路與額度限制。"
+            )
             return {
-                "reply": llm_reply,
+                "reply": error_reply,
                 "spec_contract": None,
                 "scenario_key": None,
                 "next_round": 0,
             }
-
-    # If no scenario is identified and not in test context, invite exploration
-    if not scenario_key:
-        return {
-            "reply": _build_catalog_exploration_response(is_en=effective_en),
-            "spec_contract": None,
-            "scenario_key": None,
-            "next_round": 0,
-        }
+        else:
+            key_required_reply = (
+                "🔒 **API Key Required**: Please enter a valid Google AI Studio Gemini API Key (`AIzaSy...`) "
+                "in the top-right corner to chat with the Analytics Engineering Copilot.\n\n"
+                "👉 Once saved, you can ask any question freely in any language!"
+                if effective_en
+                else "🔒 **請先輸入 API Key**：請先於右上角輸入有效的 Google AI Studio Gemini API Key（`AIzaSy...`）"
+                "以啟用分析工程智能協作助理。\n\n"
+                "👉 儲存金鑰後，即可在下方輸入框使用中文或英文自由對話！"
+            )
+            return {
+                "reply": key_required_reply,
+                "spec_contract": None,
+                "scenario_key": None,
+                "next_round": 0,
+            }
 
     # 5. Check if this turn locks the spec
     is_confirmation_text = any(

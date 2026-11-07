@@ -374,19 +374,15 @@ class KoroAdapter(BaseCockpitAdapter):
     @property
     def quick_diagnosis_questions_en(self) -> list[str]:
         return [
+            "🚀 Start AE Guided Workflow",
             "What data and catalog categories are currently available?",
-            "🌰 1kg Bulk Packaging Return Diagnosis",
-            "💰 Category Net Margin & Discount Impact",
-            "📦 Inventory Availability & Stockout Risk",
         ]
 
     @property
     def quick_diagnosis_questions_zh(self) -> list[str]:
         return [
-            "現在系統有哪些資料與報表資訊？",
-            "🌰 堅果 1kg 大包裝退貨率異常歸因",
-            "💰 品類淨毛利率與促銷折扣影響排行",
-            "📦 商品庫存可用率與缺貨風險診斷",
+            "🚀 啟動 AE 需求交付全流程",
+            "目前有哪些數據與品類目錄？",
         ]
 
     @property

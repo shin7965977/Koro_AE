@@ -171,3 +171,80 @@ def test_ae_guided_workflow_conversational_trigger() -> None:
     assert res_en["spec_contract"] is None
     assert "Modern Analytics Engineering" in res_en["reply"]
     assert "type your own requirements freely" in res_en["reply"]
+
+
+def test_quick_questions_strictly_two_options() -> None:
+    """Verify that quick diagnosis questions are pruned to strictly 2 options."""
+    adapter = KoroAdapter()
+    en_q = adapter.quick_diagnosis_questions_en
+    zh_q = adapter.quick_diagnosis_questions_zh
+
+    assert len(en_q) == 2
+    assert "🚀 Start AE Guided Workflow" in en_q[0]
+    assert "What data and catalog categories are currently available?" in en_q[1]
+
+    assert len(zh_q) == 2
+    assert "🚀 啟動 AE 需求交付全流程" in zh_q[0]
+    assert "目前有哪些數據與品類目錄？" in zh_q[1]
+
+
+def test_unmatched_query_does_not_dump_catalog_and_handles_api_key() -> None:
+    """Verify that asking non-domain queries (e.g. 柯文哲是誰) does not blindly dump catalog."""
+    adapter = KoroAdapter()
+
+    # Case 1: No API key provided -> should prompt for API key, NOT dump catalog
+    res_no_key = adapter.handle_spec_inquiry_turn(
+        user_query="柯文哲是誰",
+        is_en=False,
+        api_key="",
+    )
+    assert "歡迎探索 KoRo 湖倉分析數據平台" not in res_no_key["reply"]
+    assert "請先輸入 API Key" in res_no_key["reply"] or "API Key Required" in res_no_key["reply"]
+
+    # Case 2: Explicit catalog query -> DOES return catalog
+    res_catalog = adapter.handle_spec_inquiry_turn(
+        user_query="目前有哪些數據與品類目錄？",
+        is_en=False,
+    )
+    assert "歡迎探索 KoRo 湖倉分析數據平台" in res_catalog["reply"]
+
+
+def test_candidate_models_multi_tier_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify candidate models hierarchy: gemini-3.8-flash -> 3.6-flash -> 3.5-flash-lite."""
+    from ai.spec_guide import _call_gemini_with_grounding
+
+    attempted_models: list[str] = []
+
+    class MockGenAIClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.models = self
+
+        def generate_content(self, model: str, contents: str):
+            attempted_models.append(model)
+            if model == "gemini-3.5-flash-lite":
+                class Resp:
+                    text = "Success from 3.5-flash-lite"
+                return Resp()
+            raise Exception(f"Model {model} simulated failure")
+
+    import sys
+    import types
+    mock_genai_mod = types.ModuleType("google.genai")
+    mock_genai_mod.Client = MockGenAIClient  # type: ignore
+
+    monkeypatch.setitem(sys.modules, "google.genai", mock_genai_mod)
+
+    reply, err = _call_gemini_with_grounding(
+        user_query="柯文哲是誰",
+        chat_history=[],
+        is_en=False,
+        api_key="AIzaSyDummyTestKey1234567890",
+    )
+
+    assert "gemini-3.8-flash" in attempted_models
+    assert "gemini-3.6-flash" in attempted_models
+    assert "gemini-3.5-flash-lite" in attempted_models
+    assert reply == "Success from 3.5-flash-lite"
+    assert err is None
+
