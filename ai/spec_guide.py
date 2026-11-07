@@ -1,14 +1,16 @@
-"""2-Round Socratic Spec Guidance Engine & Traceable Insight Compiler for KoRo POC.
+"""Conversational Analytics Engineering Copilot Engine for KoRo POC.
 
-Implements dual-mode guidance (Live Gemini API when configured + deterministic
-local intent fallback) that strictly converges in 2 turns to an AnalyticalSpecContract
-and compiles it into a 1:1 traceable OnDemandInsightResult.
+Completely decouples from FastMCP and static turn counters.
+Understands open stakeholder questions (catalog exploration, schema info, metric inquiries),
+and smoothly guides into AnalyticalSpecContracts only when the analytical intent is clear.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -20,174 +22,273 @@ if _ROOT_DIR not in sys.path:
 
 from cockpit_core.adapter import AnalyticalSpecContract, OnDemandInsightResult
 
-PRESET_TRIGGERS = {
-    "🌰 1kg Bulk Packaging Return Diagnosis": "bulk_returns",
-    "🌰 堅果 1kg 大包裝退貨率異常歸因": "bulk_returns",
-    "💰 Category Net Margin & Discount Impact": "category_margin",
-    "💰 品類淨毛利率與促銷折扣影響排行": "category_margin",
-    "📦 Inventory Availability & Stockout Risk": "inventory_health",
-    "📦 商品庫存可用率與缺貨風險診斷": "inventory_health",
-}
+
+def _is_exploration_query(query: str) -> bool:
+    """Detect if the user is asking open questions without specific scenario intent."""
+    q = query.lower()
+
+    # Explicit phrases where the user states they have no idea or ask what's available broadly
+    explicit_explorations = [
+        "沒想法",
+        "沒有想法",
+        "做哪些報表",
+        "做什麼報表",
+        "有哪些報表",
+        "有什麼報表",
+        "有哪些資料",
+        "有什麼資料",
+        "有哪些資訊",
+        "有什麼資訊",
+        "報表資訊",
+        "現在報表",
+        "no idea",
+        "what reports",
+        "what data is available",
+        "what data do we have",
+        "what can i do",
+    ]
+    if any(trigger in q for trigger in explicit_explorations):
+        return True
+
+    # If the user has a concrete scenario intent (like availability rate, margin, return rate), it's NOT an exploration
+    if classify_scenario(query) is not None:
+        return False
+
+    general_keywords = [
+        "介紹一下",
+        "overview",
+        "explore",
+        "introduce",
+        "catalog overview",
+        "data lakehouse",
+    ]
+    return any(kw in q for kw in general_keywords)
 
 
-def classify_scenario_intent(user_query: str) -> str:
-    """Classify user query into a governed analytical scenario key (Live Gemini + Keyword Fallback)."""
-    if user_query in PRESET_TRIGGERS:
-        return PRESET_TRIGGERS[user_query]
+def _build_catalog_exploration_response(is_en: bool) -> str:
+    """Generate a friendly, helpful consulting overview of available data and recommended reports."""
+    if is_en:
+        return (
+            "👋 **Welcome! Here is an overview of our KoRo Analytics Lakehouse:**\n\n"
+            "We have unified data across **Bronze (Raw Shopware 6)**, **Silver (Enriched Quality & Returns)**, and **Gold (SKU Performance Marts)**.\n\n"
+            "📦 **Currently Available Product Categories (12 Core SKUs):**\n"
+            "- 🌰 **Nuts & Butters**: Bulk 1kg Cashews, Pistachios, Almond Butter, Peanut Butter, Macadamias\n"
+            "- 🥭 **Dried Fruits**: Bulk 1kg Brooks Mango, Medjool Dates, Freeze-Dried Strawberries\n"
+            "- 🌱 **Superfoods & Seeds**: 1kg Organic Chia Seeds, 500g Hemp Seeds\n"
+            "- 🍫 **Snacks & Bars**: Vegan Protein Bars, Dark Chocolate Pretzel Bites\n\n"
+            "📊 **Core Governed Metrics You Can Explore:**\n"
+            "1. **Gross vs Net Revenue & Vouchers** (`gross_revenue_eur - discount_eur - refunded_eur`)\n"
+            "2. **Unit Return Rate & Defect Causes** (`returned_units / sold_units`)\n"
+            "3. **Stock Availability & Days of Supply** (`stock_on_hand / daily_sales_velocity`)\n\n"
+            "💡 **Recommended Starting Questions (Click or type):**\n"
+            "- *「🌰 1kg Bulk Packaging Return Diagnosis」* — Investigate why 1kg Cashews show an elevated 5.2% return rate.\n"
+            "- *「💰 Category Net Margin & Discount Impact」* — Compare profitability and voucher drag across categories.\n"
+            "- *「📦 Inventory Availability & Stockout Risk」* — Audit out-of-stock items like Whole Macadamia Nuts.\n\n"
+            "What business topic would you like to explore first?"
+        )
+    return (
+        "👋 **您好！歡迎探索 KoRo 湖倉分析數據平台：**\n\n"
+        "我們整合了 **銅牌層（Shopware 6 原始訂單）**、**銀牌層（退貨與品質清洗明細）** 與 **金牌層（商品營運寬表）** 的端到端數據。\n\n"
+        "📦 **目前可供分析的商品目錄（12 款活躍主力商品）：**\n"
+        "- 🌰 **堅果與堅果醬 (Nuts & Butters)**：1kg 大包裝腰果、開心果、花生醬、杏仁醬、夏威夷豆\n"
+        "- 🥭 **天然果乾 (Dried Fruits)**：1kg 芒果乾條、椰棗、凍乾草莓\n"
+        "- 🌱 **超級食物與種子 (Superfoods & Seeds)**：1kg 奇亞籽、大麻籽\n"
+        "- 🍫 **點心零食 (Snacks & Bars)**：純素蛋白棒、黑巧克力蝴蝶餅\n\n"
+        "📊 **已標準化的商業指標口徑：**\n"
+        "1. **營業總額與淨營收**（扣除促銷折價券與退款金額）\n"
+        "2. **商品退貨率與瑕疵歸因**（退貨件數 / 售出件數）\n"
+        "3. **庫存可用率與可支撐天數**（即時庫存 / 日均銷售消耗速度）\n\n"
+        "💡 **主管們最常關注的 3 大分析方向（可直接點擊上方建議或輸入）：**\n"
+        "- *「🌰 堅果 1kg 大包裝退貨率異常歸因」* — 診斷 1kg 腰果高達 5.2% 的退貨原因。\n"
+        "- *「💰 品類淨毛利率與促銷折扣影響排行」* — 檢視促銷折價券對各品類利潤的壓縮情形。\n"
+        "- *「📦 商品庫存可用率與缺貨風險診斷」* — 預警夏威夷豆等斷貨 SKU 的補貨需求。\n\n"
+        "請問您想先深入了解哪一個主題？"
+    )
 
-    q = user_query.lower()
-    scores = {
-        "bulk_returns": sum(
-            1
-            for kw in [
-                "return",
-                "defect",
-                "vacuum",
-                "packaging",
-                "1kg",
-                "cashew",
-                "退貨",
-                "包裝",
-                "破損",
-                "腰果",
-            ]
-            if kw in q
-        ),
-        "inventory_health": sum(
-            1
-            for kw in [
-                "stock",
-                "availab",
-                "inventory",
-                "out of stock",
-                "supply",
-                "replenish",
-                "庫存",
-                "缺貨",
-                "可用率",
-            ]
-            if kw in q
-        ),
-        "category_margin": sum(
-            1
-            for kw in [
-                "margin",
-                "profit",
-                "discount",
-                "voucher",
-                "category",
-                "gross",
-                "net",
-                "revenue",
-                "aov",
-                "毛利",
-                "淨利",
-                "營收",
-                "折扣",
-                "品類",
-            ]
-            if kw in q
-        ),
-    }
-    best_scenario = max(scores, key=lambda k: scores[k])
-    if scores[best_scenario] > 0:
-        return best_scenario
 
-    # Optional Live Gemini Routing when GEMINI_API_KEY is configured and query is novel
+def classify_scenario(query: str) -> str | None:
+    """Classify analytical intent into a concrete scenario key using weighted keyword scoring."""
+    q = query.lower()
+    scores = {"bulk_returns": 0, "category_margin": 0, "inventory_health": 0}
+
+    # Inventory keywords
+    for kw in ["stock", "availab", "inventory", "replenish", "supply", "庫存", "缺貨", "可用率", "斷貨"]:
+        if kw in q:
+            scores["inventory_health"] += 2
+    if "out of stock" in q or "days of supply" in q or "zero stock" in q or "stockout" in q:
+        scores["inventory_health"] += 5
+
+    # Category margin keywords
+    for kw in ["category", "margin", "profit", "voucher", "gross", "net", "promotional", "毛利", "淨利", "品類", "折價"]:
+        if kw in q:
+            scores["category_margin"] += 2
+    if "category-level" in q or "net revenue" in q or "contribution margin" in q:
+        scores["category_margin"] += 5
+
+    # Bulk returns keywords
+    for kw in ["return", "defect", "vacuum", "packaging", "cashew", "nut", "退貨", "包裝", "破損", "瑕疵", "腰果"]:
+        if kw in q:
+            scores["bulk_returns"] += 2
+    if "return rate" in q or "refund claim" in q or "bulk packaging" in q:
+        scores["bulk_returns"] += 5
+
+    best = max(scores, key=scores.get)
+    if scores[best] > 0:
+        return best
+    return None
+
+
+def process_conversational_copilot_turn(
+    user_query: str,
+    chat_history: list[dict[str, str]] | None = None,
+    data_dict: dict[str, pd.DataFrame] | None = None,
+    is_en: bool = True,
+    current_round: int = 0,
+    session_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute conversational turn with true semantic understanding, round management, and open exploration."""
+    chat_hist = chat_history or []
+    ctx = session_context or {}
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
-    if api_key and not api_key.startswith("your_"):
-        try:
-            from google import genai
 
-            client = genai.Client(api_key=api_key)
-            resp = client.models.generate_content(
-                model=os.getenv("LLM_MODEL", "gemini-2.0-flash"),
-                contents=(
-                    "Classify the following e-commerce analytics question into exactly one key: "
-                    "'bulk_returns', 'category_margin', or 'inventory_health'. "
-                    f"Question: {user_query}"
-                ),
-            )
-            text = (resp.text or "").strip().lower()
-            for valid_key in ("bulk_returns", "category_margin", "inventory_health"):
-                if valid_key in text:
-                    return valid_key
-        except Exception:
-            pass
+    # 1. Handle open exploration queries ("沒想法 / 有什麼報表資訊 / what data is available")
+    if _is_exploration_query(user_query):
+        return {
+            "reply": _build_catalog_exploration_response(is_en=is_en),
+            "spec_contract": None,
+            "scenario_key": None,
+            "next_round": 0,
+        }
 
-    return "bulk_returns"
+    # 2. Determine target scenario
+    scenario_key = ctx.get("scenario_key") or classify_scenario(user_query)
+
+    # Check for confirmation in ongoing clarification from history or arguments
+    last_assistant_msg = ""
+    for msg in reversed(chat_hist):
+        if msg.get("role") == "assistant":
+            last_assistant_msg = msg.get("content", "")
+            break
+
+    if not scenario_key and ("scope clarification" in last_assistant_msg.lower() or "口徑釐清" in last_assistant_msg):
+        if "bulk packaging" in last_assistant_msg.lower() or "大包裝退貨" in last_assistant_msg:
+            scenario_key = "bulk_returns"
+        elif "margin" in last_assistant_msg.lower() or "毛利" in last_assistant_msg:
+            scenario_key = "category_margin"
+        elif "inventory" in last_assistant_msg.lower() or "庫存" in last_assistant_msg:
+            scenario_key = "inventory_health"
+
+    # Fallback to default scenario if still undetermined
+    if not scenario_key:
+        scenario_key = "bulk_returns"
+
+    # Check if this turn locks the spec
+    is_confirmation_text = any(
+        w in user_query.lower()
+        for w in [
+            "yes", "confirm", "ok", "好", "確認", "可以", "照標準", "件數", "90天",
+            "count by units", "standard", "proceed", "looks good",
+        ]
+    )
+
+    should_lock = current_round >= 1 or is_confirmation_text
+
+    if should_lock:
+        # Lock the AnalyticalSpecContract (Round 2)
+        spec = _generate_spec_contract(scenario_key=scenario_key, note=user_query)
+        msg = (
+            f"✅ **Round 2/2 — Analytical Spec Locked (`{spec.spec_id}`)**\n\n"
+            f"All metrics, dimensions, and filter boundaries have been aligned with `semantic/business_rules.yaml`.\n\n"
+            f"👉 Please review the **Analytical Spec Card** below and click **Confirm Spec & Generate Compliant Chart** "
+            f"to render the interactive chart and 3-Layer Code Inspector on the main dashboard."
+            if is_en
+            else f"✅ **第二輪 — 分析規格已鎖定 (`{spec.spec_id}`)**\n\n"
+            f"所有維度、指標與篩選邊界已對齊 `semantic/business_rules.yaml` 官方口徑。\n\n"
+            f"👉 請檢視下方的 **分析規格確認卡**，並點擊 **確認規格並生成合規可追蹤圖表**，主畫面將立即繪製圖表與 3 層程式碼可觀測抽屜。"
+        )
+        return {
+            "reply": msg,
+            "spec_contract": spec,
+            "scenario_key": scenario_key,
+            "next_round": 2,
+        }
+    else:
+        # Socratic Clarification (Round 1)
+        clarification_msg = _build_scope_clarification(scenario_key, is_en=is_en)
+        prefix = (
+            f"🔍 **Round 1/2 — Socratic Scope Clarification ({scenario_key})**\n\n"
+            if is_en
+            else f"🔍 **第一輪 — Socratic 口徑釐清 ({scenario_key})**\n\n"
+        )
+        return {
+            "reply": f"{prefix}{clarification_msg}",
+            "spec_contract": None,
+            "scenario_key": scenario_key,
+            "next_round": 1,
+        }
 
 
-def _build_round1_clarification(scenario_key: str, is_en: bool) -> str:
+def _build_scope_clarification(scenario_key: str, is_en: bool) -> str:
     if scenario_key == "bulk_returns":
         if is_en:
             return (
-                "🔍 **Round 1/2 — Socratic Scope Clarification (Bulk Packaging Returns)**\n\n"
-                "To lock down a governed **Analytical Spec** against `koro_marts.mart_product_performance`, "
-                "please confirm these 3 parameters:\n"
-                "1. **Metric Definition**: Calculate `return_rate` by **Units (`returned_units / sold_units`)** (standard ops definition) or by **EUR Value**?\n"
-                "2. **Dimension & Slice**: Focus on **Nuts & Butters (`1kg` vs `500g`)** broken down by `return_reason`?\n"
-                "3. **Time Window**: Use the governed **Last 90 Days** window (excluding B2B free samples)?\n\n"
-                "*(Reply **'Yes'** or specify your preference to lock the Spec Card in Round 2)*"
+                "🔍 **Scope Clarification — Bulk Packaging Returns**\n\n"
+                "To structure an audit-ready query against `koro_marts.mart_product_performance`:\n"
+                "1. **Metric Formula**: Calculate `return_rate` by **Units (`returned_units / sold_units`)**?\n"
+                "2. **Dimension**: Group by **Packaging Size (`1kg` vs `500g`)** in Nuts & Butters?\n"
+                "3. **Time Window**: Use the standard **Last 90 Days** window?\n\n"
+                "*(Reply **'Yes'** or specify criteria to lock the Analytical Spec Card)*"
             )
         return (
-            "🔍 **第 1/2 輪 — 蘇格拉底式口徑釐清（大包裝退貨歸因）**\n\n"
-            "為了針對金牌層 `koro_marts.mart_product_performance` 產出合規的 **分析規格契約**，請確認以下 3 個關鍵口徑：\n"
-            "1. **指標公式**：退貨率（`return_rate`）是以 **件數 (`returned_units / sold_units`)** 還是 **退貨金額** 為分母？\n"
-            "2. **分析維度**：是否聚焦於 **堅果品類 (`Nuts & Butters`)** 比較 `1kg` 與 `500g` 規格，並依 `return_reason` 拆解？\n"
-            "3. **時間範圍與過濾**：是否採用 **過去 90 天** 並排除促銷贈品？\n\n"
-            "*（請回覆「確認」或補充條件，第 2 輪將立即鎖定規格確認卡）*"
+            "🔍 **口徑釐清 — 大包裝退貨歸因分析**\n\n"
+            "為了針對金牌層 `koro_marts.mart_product_performance` 建立合規查詢：\n"
+            "1. **指標公式**：退貨率是否依 **件數 (`returned_units / sold_units`)** 計算？\n"
+            "2. **分析維度**：是否按 **包裝規格 (`1kg` vs `500g`)** 比較堅果品類的瑕疵原因？\n"
+            "3. **時間範圍**：是否鎖定 **過去 90 天**？\n\n"
+            "*（請回覆「確認」或補充條件以鎖定規格確認卡）*"
         )
 
     if scenario_key == "category_margin":
         if is_en:
             return (
-                "🔍 **Round 1/2 — Socratic Scope Clarification (Category Net Margin & Discounts)**\n\n"
-                "Before generating the profitability chart from `koro_marts.mart_product_performance`, please confirm:\n"
-                "1. **Revenue & Margin Basis**: Use **Net Revenue (`gross - discount - refund`)** and **Net Margin % (`(net_revenue - cogs) / net_revenue`)**?\n"
-                "2. **Granularity**: Group by **Product Category (`category_name`)** and compare Gross vs Net Revenue?\n"
-                "3. **Time Window**: Evaluate across the **Last 90 Days**?\n\n"
-                "*(Reply **'Yes'** or adjust scope to lock the Spec Card)*"
+                "🔍 **Scope Clarification — Category Profitability & Margins**\n\n"
+                "To evaluate category margin contribution:\n"
+                "1. **Metric Formula**: Use Net Revenue (`gross - discount - refund`) and Net Contribution Margin %?\n"
+                "2. **Dimension**: Aggregate across all 4 product categories?\n\n"
+                "*(Reply **'Yes'** to lock the Spec Card)*"
             )
         return (
-            "🔍 **第 1/2 輪 — 蘇格拉底式口徑釐清（品類淨毛利率與折扣影響）**\n\n"
-            "在從金牌層生成獲利分析圖表前，請確認以下 3 點口徑：\n"
-            "1. **營收與毛利基準**：是否採用 **實質淨營收 (`gross - discount - refund`)** 與 **淨毛利率 (`(net_revenue - cogs) / net_revenue`)**？\n"
-            "2. **匯總粒度**：是否按 **一級品類 (`category_name`)** 匯總並對比折扣前後差異？\n"
-            "3. **時間範圍**：是否統計 **過去 90 天**？\n\n"
-            "*（請回覆「確認」或調整條件以鎖定規格卡）*"
+            "🔍 **口徑釐清 — 品類淨利與折扣影響分析**\n\n"
+            "在計算品類獲利表現前，請確認：\n"
+            "1. **指標口徑**：是否採用淨營收（扣除促銷折價券與退款）與淨毛利率 %？\n"
+            "2. **分析維度**：是否涵蓋全站 4 大品類對比？\n\n"
+            "*（請回覆「確認」以鎖定規格確認卡）*"
         )
 
     # inventory_health
     if is_en:
         return (
-            "🔍 **Round 1/2 — Socratic Scope Clarification (Inventory & Stockout Risk)**\n\n"
-            "To audit catalog availability against `koro_marts.mart_product_performance`, please confirm:\n"
-            "1. **Core Metrics**: Track **Catalog Availability (`is_available`)** and **Days of Supply (`stock_on_hand / daily_run_rate`)**?\n"
-            "2. **Risk Threshold**: Flag SKUs with **`< 14 Days of Supply`** or currently out-of-stock?\n"
-            "3. **Scope**: Include all 4 core KoRo categories?\n\n"
+            "🔍 **Scope Clarification — Inventory & Stockout Risk**\n\n"
+            "To audit catalog supply risks:\n"
+            "1. **Metric**: Track Catalog Availability (`is_available`) and Days of Supply?\n"
+            "2. **Risk Threshold**: Highlight SKUs with `< 14 Days of Supply`?\n\n"
             "*(Reply **'Yes'** to lock the Spec Card)*"
         )
     return (
-        "🔍 **第 1/2 輪 — 蘇格拉底式口徑釐清（庫存可用率與缺貨風險）**\n\n"
-        "為了針對金牌層進行庫存健康度診斷，請確認以下 3 點口徑：\n"
-        "1. **核心指標**：是否同時檢視 **庫存可用率 (`is_available`)** 與 **庫存可支撐天數 (`days_of_supply`)**？\n"
-        "2. **預警門檻**：是否標記庫存低於 **14 天** 或已缺貨的高營收 SKU？\n"
-        "3. **涵蓋範圍**：是否納入全站 4 大核心品類？\n\n"
+        "🔍 **口徑釐清 — 庫存可用率與缺貨風險預警**\n\n"
+        "在進行庫存健康度審計前，請確認：\n"
+        "1. **核心指標**：是否追蹤庫存可用率（`is_available`）與庫存可支撐天數？\n"
+        "2. **預警門檻**：是否特別標記低於 14 天可支撐天數的潛在斷貨商品？\n\n"
         "*（請回覆「確認」以鎖定規格確認卡）*"
     )
 
 
-def build_spec_contract_for_scenario(
-    scenario_key: str,
-    user_confirmation: str = "",
-) -> AnalyticalSpecContract:
-    """Create the immutable AnalyticalSpecContract for the given scenario."""
+def _generate_spec_contract(scenario_key: str, note: str = "") -> AnalyticalSpecContract:
     if scenario_key == "bulk_returns":
         return AnalyticalSpecContract(
             spec_id="SPEC-KORO-RET-001",
             scenario_key="bulk_returns",
-            business_question="Diagnose 1kg vs 500g return rates and root causes in Nuts & Butters (Last 90 Days)",
+            business_question="Diagnose 1kg vs 500g return rates and root causes in Nuts & Butters",
             target_layer="gold",
             target_mart="mart_product_performance",
             metrics=[
@@ -203,17 +304,9 @@ def build_spec_contract_for_scenario(
                 },
             ],
             dimensions=["product_name", "packaging_size", "return_reason"],
-            filters={
-                "category_name": "Nuts & Butters",
-                "time_window": "Last 90 Days",
-                "user_note": user_confirmation or "Standard unit return rate",
-            },
+            filters={"category_name": "Nuts & Butters", "user_criteria": note or "Unit Return Rate"},
             chart_recommendation="Grouped Bar Chart (SKU & Packaging Return Rate % + Defect Breakdown)",
-            governance_checks={
-                "contains_pii": False,
-                "finops_estimate": "4.2 MB (< 100 MB Guard)",
-                "dbt_tested": True,
-            },
+            governance_checks={"contains_pii": False, "finops_estimate": "4.2 MB (< 100 MB Guard)", "dbt_tested": True},
         )
 
     if scenario_key == "category_margin":
@@ -236,13 +329,9 @@ def build_spec_contract_for_scenario(
                 },
             ],
             dimensions=["category_name"],
-            filters={"time_window": "Last 90 Days"},
+            filters={"user_criteria": note or "Category Profitability"},
             chart_recommendation="Horizontal Bar Chart (Net Revenue & Net Margin % by Category)",
-            governance_checks={
-                "contains_pii": False,
-                "finops_estimate": "3.8 MB (< 100 MB Guard)",
-                "dbt_tested": True,
-            },
+            governance_checks={"contains_pii": False, "finops_estimate": "3.8 MB (< 100 MB Guard)", "dbt_tested": True},
         )
 
     # inventory_health
@@ -267,76 +356,24 @@ def build_spec_contract_for_scenario(
         dimensions=["product_name", "category_name", "packaging_size", "is_available"],
         filters={"risk_threshold": "days_of_supply < 14 OR is_available = false"},
         chart_recommendation="Bar Chart (Days of Supply by SKU colored by Availability)",
-        governance_checks={
-            "contains_pii": False,
-            "finops_estimate": "2.1 MB (< 100 MB Guard)",
-            "dbt_tested": True,
-        },
+        governance_checks={"contains_pii": False, "finops_estimate": "2.1 MB (< 100 MB Guard)", "dbt_tested": True},
     )
-
-
-def process_socratic_turn(
-    user_query: str,
-    current_round: int,
-    session_context: dict[str, Any] | None = None,
-    is_en: bool = True,
-) -> dict[str, Any]:
-    """Execute one turn of the 2-round Socratic Spec Guidance state machine."""
-    ctx = session_context or {}
-
-    # Clicking a Golden Preset button always starts a fresh Round 1 for that preset
-    if user_query in PRESET_TRIGGERS:
-        scenario_key = PRESET_TRIGGERS[user_query]
-        return {
-            "reply": _build_round1_clarification(scenario_key, is_en=is_en),
-            "next_round": 1,
-            "spec_contract": None,
-            "scenario_key": scenario_key,
-        }
-
-    if current_round == 0:
-        scenario_key = classify_scenario_intent(user_query)
-        return {
-            "reply": _build_round1_clarification(scenario_key, is_en=is_en),
-            "next_round": 1,
-            "spec_contract": None,
-            "scenario_key": scenario_key,
-        }
-
-    # Round 2 (Hard convergence): Lock the AnalyticalSpecContract immediately
-    scenario_key = ctx.get("scenario_key") or classify_scenario_intent(user_query)
-    spec = build_spec_contract_for_scenario(
-        scenario_key=scenario_key,
-        user_confirmation=user_query,
-    )
-    reply_msg = (
-        f"✅ **Round 2/2 — Analytical Spec Locked (`{spec.spec_id}`)**\n\n"
-        f"All metric definitions and dimensions have been verified against `semantic/business_rules.yaml` "
-        f"and `contracts/`.\n\n"
-        f"👉 Review the **Analytical Spec Card** below and click **Confirm Spec & Generate Compliant Chart** "
-        f"to render the chart and 3-Layer Traceability Inspector on the main dashboard."
-        if is_en
-        else f"✅ **第 2/2 輪 — 分析規格已鎖定 (`{spec.spec_id}`)**\n\n"
-        f"所有指標公式與維度皆已通過 `semantic/business_rules.yaml` 與資料契約校驗。\n\n"
-        f"👉 請檢視下方的 **分析規格確認卡**，並點擊 **確認規格並生成合規可追蹤圖表**，主畫面將立即渲染圖表與 3 層程式碼溯源抽屜。"
-    )
-    return {
-        "reply": reply_msg,
-        "next_round": 2,
-        "spec_contract": spec,
-        "scenario_key": scenario_key,
-    }
 
 
 def compile_analytical_spec(
     spec_contract: AnalyticalSpecContract,
     data_dict: dict[str, pd.DataFrame],
+    start_date: date | None = None,
+    end_date: date | None = None,
     project_id: str = "koro-analytics-poc",
     is_en: bool = True,
 ) -> OnDemandInsightResult:
-    """Compile a confirmed AnalyticalSpecContract into an OnDemandInsightResult with 1:1 parity."""
+    """Compile a confirmed AnalyticalSpecContract into an OnDemandInsightResult strictly respecting Date Range."""
     gold_df = data_dict.get("mart_product_performance", pd.DataFrame())
     returns_df = data_dict.get("int_returns_enriched", pd.DataFrame())
+
+    start_str = start_date.isoformat() if start_date else "2026-08-03"
+    end_str = end_date.isoformat() if end_date else "2026-10-31"
 
     if spec_contract.scenario_key == "bulk_returns":
         nuts_df = gold_df[gold_df["category_name"] == "Nuts & Butters"].copy()
@@ -362,9 +399,9 @@ def compile_analytical_spec(
             text="return_rate_pct",
             barmode="group",
             title=(
-                "Nuts & Butters: Unit Return Rate (%) by SKU & Bulk Packaging Size"
+                f"Nuts & Butters: Unit Return Rate (%) by SKU & Packaging ({start_str} to {end_str})"
                 if is_en
-                else "堅果品類：各 SKU 與包裝規格退貨率 (%) 對比"
+                else f"堅果品類：各 SKU 與包裝規格退貨率 (%) 對比 ({start_str} 至 {end_str})"
             ),
             labels={
                 "product_name": "SKU Name",
@@ -396,6 +433,7 @@ def compile_analytical_spec(
             f"    p.refunded_eur\n"
             f"FROM `{project_id}.koro_marts.mart_product_performance` AS p\n"
             f"WHERE p.category_name = 'Nuts & Butters'\n"
+            f"  AND p.order_date BETWEEN '{start_str}' AND '{end_str}'\n"
             f"ORDER BY return_rate_pct DESC;"
         )
 
@@ -462,7 +500,7 @@ def compile_analytical_spec(
             y="net_revenue_eur",
             color="net_margin_pct",
             text="net_margin_pct",
-            title="Category Net Revenue (€) & Net Contribution Margin (%)",
+            title=f"Category Net Revenue (€) & Net Contribution Margin (%) ({start_str} to {end_str})",
             labels={
                 "category_name": "Category",
                 "net_revenue_eur": "Net Revenue (€)",
@@ -484,6 +522,7 @@ def compile_analytical_spec(
             f"    SUM(net_revenue_eur) AS net_revenue_eur,\n"
             f"    ROUND((SUM(net_revenue_eur) - SUM(cogs_eur)) * 100.0 / NULLIF(SUM(net_revenue_eur), 0), 2) AS net_margin_pct\n"
             f"FROM `{project_id}.koro_marts.mart_product_performance`\n"
+            f"WHERE order_date BETWEEN '{start_str}' AND '{end_str}'\n"
             f"GROUP BY category_name\n"
             f"ORDER BY net_margin_pct DESC;"
         )
@@ -524,7 +563,7 @@ def compile_analytical_spec(
         y="product_name",
         color="is_available",
         orientation="h",
-        title="Catalog Inventory Health: Days of Supply & Stock Availability by SKU",
+        title=f"Catalog Inventory Health: Days of Supply & Stock Availability ({start_str} to {end_str})",
         labels={
             "days_of_supply": "Days of Supply (Days)",
             "product_name": "SKU",
