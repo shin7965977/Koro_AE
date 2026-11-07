@@ -1,0 +1,74 @@
+{
+  "BM-01": {
+    "expected_scenario": "bulk_returns",
+    "expected_spec_id": "SPEC-KORO-RET-001",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "5.2%"
+  },
+  "BM-02": {
+    "expected_scenario": "bulk_returns",
+    "expected_spec_id": "SPEC-KORO-RET-001",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "78%"
+  },
+  "BM-03": {
+    "expected_scenario": "bulk_returns",
+    "expected_spec_id": "SPEC-KORO-RET-001",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "KORO-NUT-001"
+  },
+  "BM-04": {
+    "expected_scenario": "bulk_returns",
+    "expected_spec_id": "SPEC-KORO-RET-001",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "5.2%"
+  },
+  "BM-05": {
+    "expected_scenario": "category_margin",
+    "expected_spec_id": "SPEC-KORO-MRG-002",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "Superfoods & Seeds"
+  },
+  "BM-06": {
+    "expected_scenario": "category_margin",
+    "expected_spec_id": "SPEC-KORO-MRG-002",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "Net Revenue"
+  },
+  "BM-07": {
+    "expected_scenario": "category_margin",
+    "expected_spec_id": "SPEC-KORO-MRG-002",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "margin"
+  },
+  "BM-08": {
+    "expected_scenario": "category_margin",
+    "expected_spec_id": "SPEC-KORO-MRG-002",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "Superfoods & Seeds"
+  },
+  "BM-09": {
+    "expected_scenario": "inventory_health",
+    "expected_spec_id": "SPEC-KORO-INV-003",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "KORO-NUT-005"
+  },
+  "BM-10": {
+    "expected_scenario": "inventory_health",
+    "expected_spec_id": "SPEC-KORO-INV-003",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "91.7%"
+  },
+  "BM-11": {
+    "expected_scenario": "inventory_health",
+    "expected_spec_id": "SPEC-KORO-INV-003",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "Whole Macadamia Nuts"
+  },
+  "BM-12": {
+    "expected_scenario": "inventory_health",
+    "expected_spec_id": "SPEC-KORO-INV-003",
+    "expected_target_mart": "mart_product_performance",
+    "expected_takeaway_substring": "KORO-NUT-005"
+  }
+}

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "BM-01",
+    "question": "Which 1kg bulk packaging nut product has the highest return rate and what is the main defect reason?",
+    "stakeholder_role": "Operations Lead"
+  },
+  {
+    "id": "BM-02",
+    "question": "Compare unit return rates across Nuts & Butters SKUs over the last 90 days.",
+    "stakeholder_role": "Quality Assurance Manager"
+  },
+  {
+    "id": "BM-03",
+    "question": "Why are Organic Cashews Bulk 1kg experiencing elevated customer refund claims?",
+    "stakeholder_role": "Category Manager - Nuts"
+  },
+  {
+    "id": "BM-04",
+    "question": "堅果 1kg 大包裝退貨率異常歸因與包裝破損佔比為何？",
+    "stakeholder_role": "VP of Operations"
+  },
+  {
+    "id": "BM-05",
+    "question": "Which product category generates the highest Net Contribution Margin % after promotional discounts?",
+    "stakeholder_role": "Finance Director"
+  },
+  {
+    "id": "BM-06",
+    "question": "How do Gross Revenue and Net Revenue compare across all 4 product categories?",
+    "stakeholder_role": "Head of E-Commerce"
+  },
+  {
+    "id": "BM-07",
+    "question": "What is the impact of vouchers and refunds on category-level profitability?",
+    "stakeholder_role": "Marketing Lead"
+  },
+  {
+    "id": "BM-08",
+    "question": "品類淨毛利率與促銷折扣影響排行？",
+    "stakeholder_role": "Commercial Lead"
+  },
+  {
+    "id": "BM-09",
+    "question": "Are any high-demand SKUs currently out of stock or facing stockout risk?",
+    "stakeholder_role": "Supply Chain Planner"
+  },
+  {
+    "id": "BM-10",
+    "question": "What is our current catalog product availability rate and days of supply by SKU?",
+    "stakeholder_role": "Merchandising Manager"
+  },
+  {
+    "id": "BM-11",
+    "question": "Identify products with zero stock on hand that require immediate replenishment.",
+    "stakeholder_role": "Procurement Lead"
+  },
+  {
+    "id": "BM-12",
+    "question": "商品庫存可用率與缺貨風險診斷？",
+    "stakeholder_role": "Inventory Controller"
+  }
+]

@@ -1,0 +1,74 @@
+version: "1.0"
+domain: "KoRo E-Commerce Product & Sales Intelligence"
+disclaimer: "Public catalog metadata combined with synthetic operational transactions. Never present synthetic figures as KoRo internal proprietary financials."
+
+metrics:
+  - key: gross_revenue
+    name_en: "Gross Revenue"
+    name_zh: "營業總額 (Gross Revenue)"
+    formula: "SUM(gross_revenue_eur)"
+    target_mart: "koro_marts.mart_product_performance"
+    contract_ref: "contracts/order_items.yaml#gross_revenue_eur"
+    description_en: "Total product sales revenue before promotional discounts and customer refunds."
+    description_zh: "扣除促銷折扣與退貨退款前的商品銷售總額。"
+    target_rule: ">= €450,000 / quarter"
+
+  - key: net_revenue
+    name_en: "Net Revenue"
+    name_zh: "實質淨營收 (Net Revenue)"
+    formula: "SUM(gross_revenue_eur - discount_eur - refunded_eur)"
+    target_mart: "koro_marts.mart_product_performance"
+    contract_ref: "contracts/order_items.yaml#net_revenue_eur"
+    description_en: "Realized revenue after subtracting promotional vouchers and refunded returns."
+    description_zh: "扣除促銷折價券與退貨退款後的實質淨營收（財務與行銷統一對齊口徑）。"
+    target_rule: ">= €400,000 / quarter"
+
+  - key: aov
+    name_en: "Average Order Value (AOV)"
+    name_zh: "平均客單價 (AOV)"
+    formula: "SUM(order_net_eur) / COUNT(DISTINCT order_id)"
+    target_mart: "koro_marts.fct_orders"
+    contract_ref: "contracts/orders.yaml#order_net_eur"
+    description_en: "Total net order revenue divided by total valid completed orders."
+    description_zh: "總淨訂單金額除以有效完成訂單數。"
+    target_rule: ">= €58.00"
+
+  - key: return_rate
+    name_en: "Unit Return Rate"
+    name_zh: "商品退貨率 (Return Rate)"
+    formula: "ROUND(SUM(returned_units) * 100.0 / NULLIF(SUM(sold_units), 0), 2)"
+    target_mart: "koro_marts.mart_product_performance"
+    contract_ref: "contracts/returns.yaml#returned_units"
+    description_en: "Percentage of sold units returned by customers due to packaging or quality issues."
+    description_zh: "退貨件數佔總售出件數之百分比（預設以件數為分母，排除促銷贈品）。"
+    target_rule: "<= 2.50%"
+
+  - key: asp
+    name_en: "Average Selling Price (ASP)"
+    name_zh: "平均銷售單價 (ASP)"
+    formula: "SUM(net_revenue_eur) / NULLIF(SUM(sold_units), 0)"
+    target_mart: "koro_marts.mart_product_performance"
+    contract_ref: "contracts/order_items.yaml#net_revenue_eur"
+    description_en: "Net product revenue divided by total units sold."
+    description_zh: "商品淨營收除以總售出件數。"
+    target_rule: ">= €11.50"
+
+  - key: net_margin_pct
+    name_en: "Net Contribution Margin %"
+    name_zh: "淨毛利率 (Net Margin %)"
+    formula: "ROUND((SUM(net_revenue_eur) - SUM(cogs_eur)) * 100.0 / NULLIF(SUM(net_revenue_eur), 0), 2)"
+    target_mart: "koro_marts.mart_product_performance"
+    contract_ref: "contracts/products.yaml#unit_cost_eur"
+    description_en: "Net revenue minus product & bulk packaging COGS divided by net revenue."
+    description_zh: "扣除商品與大包裝成本後的淨毛利佔淨營收百分比。"
+    target_rule: ">= 32.0%"
+
+  - key: product_availability
+    name_en: "Catalog Availability Rate"
+    name_zh: "商品庫存可用率 (Availability)"
+    formula: "ROUND(SUM(CASE WHEN is_available THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)"
+    target_mart: "koro_marts.mart_product_performance"
+    contract_ref: "contracts/products.yaml#is_available"
+    description_en: "Share of active SKUs currently in stock and available for purchase."
+    description_zh: "目前有庫存且可購買的活躍 SKU 佔總目錄比例。"
+    target_rule: ">= 95.0%"

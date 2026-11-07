@@ -5,9 +5,9 @@ Connect the end-to-end tracer bullet for the hero scenario ("🌰 Bulk Packaging
 
 **Blocked by:** 01, 02
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Implement the 2-round Socratic state machine (`IDLE` -> `ROUND_1_CLARIFYING` -> `ROUND_2_SPEC_LOCKED`) in `ai/spec_guide.py`.
-- [ ] Implement the deterministic spec compiler for the Bulk Packaging Return Diagnosis scenario using DuckDB over the Gold Mart (`mart_product_performance`) and Silver returns table.
-- [ ] Wire `KoroAdapter` hooks (`handle_spec_inquiry_turn` and `compile_spec_to_insight`) and create the Streamlit entrypoint `dashboard/app.py`.
-- [ ] Verify the complete 2-round conversation and compiled `OnDemandInsightResult` parity via integration tests.
+- [x] Implement the 2-round Socratic state machine (`IDLE` -> `ROUND_1_CLARIFYING` -> `ROUND_2_SPEC_LOCKED`) in `ai/spec_guide.py`.
+- [x] Implement the deterministic spec compiler for the Bulk Packaging Return Diagnosis scenario using DuckDB over the Gold Mart (`mart_product_performance`) and Silver returns table.
+- [x] Wire `KoroAdapter` hooks (`handle_spec_inquiry_turn` and `compile_spec_to_insight`) and create the Streamlit entrypoint `dashboard/app.py`.
+- [x] Verify the complete 2-round conversation and compiled `OnDemandInsightResult` parity via integration tests.

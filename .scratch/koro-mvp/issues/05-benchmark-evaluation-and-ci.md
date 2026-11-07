@@ -5,9 +5,9 @@ Build an automated Benchmark Evaluation suite (`evaluation/`) with 12 realistic 
 
 **Blocked by:** 03
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Create `evaluation/benchmark_questions.json` (12 questions) and `evaluation/ground_truth.json`.
-- [ ] Implement `evaluation/evaluation.py` to run all 12 benchmark questions through the spec engine and compiler, outputting `evaluation/evaluation_report.md`.
-- [ ] Create `.github/workflows/ci.yml` and complete architectural documentation in `docs/`.
-- [ ] Verify 100% pass rate across all 12 benchmark questions via regression tests.
+- [x] Create `evaluation/benchmark_questions.json` (12 questions) and `evaluation/ground_truth.json`.
+- [x] Implement `evaluation/evaluation.py` to run all 12 benchmark questions through the spec engine and compiler, outputting `evaluation/evaluation_report.md`.
+- [x] Create `.github/workflows/ci.yml` and complete architectural documentation in `docs/`.
+- [x] Verify 100% pass rate across all 12 benchmark questions via regression tests.

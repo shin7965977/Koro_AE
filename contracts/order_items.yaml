@@ -1,0 +1,34 @@
+entity: order_items
+version: "1.0"
+description: "Line-item level sales granularity linking orders to specific SKUs and bulk packaging sizes."
+fields:
+  - name: order_item_id
+    type: string
+    required: true
+    unique: true
+    description: "Primary key for order line item"
+  - name: order_id
+    type: string
+    required: true
+    description: "Foreign key to orders.order_id"
+  - name: product_id
+    type: string
+    required: true
+    description: "Foreign key to products.product_id"
+  - name: sold_units
+    type: integer
+    required: true
+    description: "Quantity of product units purchased"
+  - name: gross_revenue_eur
+    type: decimal
+    required: true
+    description: "Line item gross revenue before discounts"
+  - name: net_revenue_eur
+    type: decimal
+    required: true
+    description: "Line item net revenue after discounts and refunds"
+metadata:
+  source: shopware_6_api_synthetic
+  owner: analytics_engineering
+  contains_pii: false
+  gdpr_classification: anonymized_transactional

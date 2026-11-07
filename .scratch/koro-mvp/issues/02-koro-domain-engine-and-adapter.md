@@ -5,9 +5,9 @@ Create the KoRo e-commerce domain foundation in `Koro_AE`, including YAML Data C
 
 **Blocked by:** None (can start immediately)
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] Create YAML data contracts in `contracts/` and semantic metric definitions in `semantic/business_rules.yaml` plus `metadata/`.
-- [ ] Build the deterministic synthetic Medallion dataset and DuckDB query helper in `ingestion/` and `warehouse/`, embedding realistic KoRo product categories (Nuts & Butters, Dried Fruits, Superfoods, Snacks) and the 1kg Cashew vacuum packaging defect pattern.
-- [ ] Implement `KoroAdapter` with 4 KPI cards (`Gross Revenue`, `Net Revenue`, `AOV`, `Return Rate`) and Gold/Silver/Bronze tabs with 1:1 SQL & DataFrame snippet parity.
-- [ ] Verify data generation, KPI calculations, and date filtering via unit tests.
+- [x] Create YAML data contracts in `contracts/` and semantic metric definitions in `semantic/business_rules.yaml` plus `metadata/`.
+- [x] Build the deterministic synthetic Medallion dataset and DuckDB query helper in `ingestion/` and `warehouse/`, embedding realistic KoRo product categories (Nuts & Butters, Dried Fruits, Superfoods, Snacks) and the 1kg Cashew vacuum packaging defect pattern.
+- [x] Implement `KoroAdapter` with 4 KPI cards (`Gross Revenue`, `Net Revenue`, `AOV`, `Return Rate`) and Gold/Silver/Bronze tabs with 1:1 SQL & DataFrame snippet parity.
+- [x] Verify data generation, KPI calculations, and date filtering via unit tests.

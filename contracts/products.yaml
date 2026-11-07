@@ -1,0 +1,38 @@
+entity: products
+version: "1.0"
+description: "KoRo public catalog product attributes, bulk packaging specifications, and stock status."
+fields:
+  - name: product_id
+    type: string
+    required: true
+    unique: true
+    description: "Unique SKU identifier (e.g. KORO-NUT-001)"
+  - name: product_name
+    type: string
+    required: true
+    description: "Official product title from KoRo catalog"
+  - name: category_name
+    type: string
+    required: true
+    description: "Top-level product taxonomy (Nuts & Butters, Dried Fruits, Superfoods & Seeds, Snacks & Bars)"
+  - name: packaging_size
+    type: string
+    required: true
+    description: "Bulk packaging weight specification (1kg, 500g, 250g)"
+  - name: unit_price_eur
+    type: decimal
+    required: true
+    description: "Gross list selling price in EUR"
+  - name: unit_cost_eur
+    type: decimal
+    required: true
+    description: "COGS and packaging unit cost in EUR"
+  - name: is_available
+    type: boolean
+    required: true
+    description: "Current website stock availability flag"
+metadata:
+  source: koro_website_public_catalog
+  owner: analytics_engineering
+  contains_pii: false
+  gdpr_classification: public
