@@ -155,3 +155,19 @@ def test_multilingual_adaptive_and_language_capability_inquiry() -> None:
     res2 = adapter.handle_spec_inquiry_turn(user_query="你是誰", chat_history=[], data_dict=data, is_en=True)
     assert res2["spec_contract"] is None
     assert "分析工程智能協作助理" in res2["reply"]
+
+
+def test_ae_guided_workflow_conversational_trigger() -> None:
+    """Verify triggering AE workflow in chat presents 6-step lifecycle and invites user opinion."""
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
+
+    res_zh = adapter.handle_spec_inquiry_turn(user_query="🚀 啟動 AE 需求交付全流程", chat_history=[], data_dict=data, is_en=False)
+    assert res_zh["spec_contract"] is None
+    assert "端到端交付工作流已啟動" in res_zh["reply"]
+    assert "自由表述您的想法" in res_zh["reply"] or "輸入您的自訂想法" in res_zh["reply"]
+
+    res_en = adapter.handle_spec_inquiry_turn(user_query="🚀 Start AE Guided Workflow", chat_history=[], data_dict=data, is_en=True)
+    assert res_en["spec_contract"] is None
+    assert "Modern Analytics Engineering" in res_en["reply"]
+    assert "type your own requirements freely" in res_en["reply"]

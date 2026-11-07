@@ -138,9 +138,36 @@ def classify_scenario(query: str) -> str | None:
     return None
 
 
-def _is_general_or_language_query(query: str) -> tuple[bool, str]:
-    """Detect general inquiries, language checks, or identity questions and reply adaptively."""
+def _is_general_or_language_query(query: str, is_en: bool = True) -> tuple[bool, str]:
+    """Detect general inquiries, language checks, identity questions, or AE workflow trigger."""
     q = query.strip().lower()
+
+    # AE Workflow initiation query
+    if any(kw in q for kw in ["start ae", "啟動 ae", "guided workflow", "workflow", "開始流程", "交付流程"]):
+        return True, (
+            "🚀 **Modern Analytics Engineering (AE) Delivery Lifecycle Activated!**\n\n"
+            "We will partner to turn your business questions into governed metrics and an interactive Looker dashboard across 6 steps:\n"
+            "1. **Business Scoping** → 2. **Semantic Contract** → 3. **Data Contracts** → 4. **dbt Transformation** → 5. **LookML Modeling** → 6. **Customizable Looker BI**\n\n"
+            "🎯 **Step 1: Business Scoping & Stakeholder Alignment**\n\n"
+            "What business problem or anomaly would you like to solve? "
+            "You can **type your own requirements freely in the chat below**, or select from these high-priority topics:\n"
+            "- *「🌰 1kg Bulk Packaging Return Diagnosis」* — Diagnose why 1kg Cashews show a 5.2% return rate.\n"
+            "- *「💰 Category Net Margin & Discount Impact」* — Review category profitability after vouchers.\n"
+            "- *「📦 Inventory Availability & Stockout Risk」* — Audit out-of-stock items like Macadamia Nuts.\n\n"
+            "👉 Please enter your thoughts, specific questions, or click a topic above to begin!"
+            if is_en
+            else
+            "🚀 **現代分析工程（Analytics Engineering）端到端交付工作流已啟動！**\n\n"
+            "我們將經歷完整的 6 步驟，將您的商業痛點轉化為合規指標與可自由調整的 Looker 圖表：\n"
+            "1. **商業需求澄清** → 2. **語意指標合約** → 3. **數據契約血緣** → 4. **dbt SQL 轉換** → 5. **LookML 語意建模** → 6. **可自訂 Looker 圖表**\n\n"
+            "🎯 **第一步：商業需求與痛點定位 (Business Scoping)**\n\n"
+            "請問您目前最想診斷或解決的業務痛點是什麼？\n"
+            "您可以在**下方輸入框自由表述您的想法、想分析的商品或指標**，也可以直接點選下列方向：\n"
+            "- *「🌰 堅果 1kg 大包裝退貨率異常歸因」* — 深入診斷 1kg 腰果高達 5.2% 的退貨原因。\n"
+            "- *「💰 品類淨毛利率與促銷折扣影響排行」* — 檢視促銷折價券對各品類利潤的壓縮。\n"
+            "- *「📦 商品庫存可用率與缺貨風險預警」* — 預警夏威夷豆等斷貨 SKU 的補貨需求。\n\n"
+            "👉 歡迎在下方輸入您的自訂想法，或直接點擊上方問題開始！"
+        )
 
     # Language capability or switch query
     if any(kw in q for kw in ["說中文", "講中文", "會說中文", "能說中文", "中文嗎", "speak chinese", "chinese"]):
@@ -226,8 +253,8 @@ def process_conversational_copilot_turn(
     has_chinese = bool(re.search(r"[\u4e00-\u9fff]", user_query))
     effective_en = False if has_chinese else is_en
 
-    # 2. Handle General & Language Capability Questions
-    is_gen, gen_reply = _is_general_or_language_query(user_query)
+    # 2. Handle General, Language Capability & AE Workflow Questions
+    is_gen, gen_reply = _is_general_or_language_query(user_query, is_en=effective_en)
     if is_gen:
         return {
             "reply": gen_reply,
