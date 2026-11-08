@@ -13,6 +13,7 @@ import sys
 from datetime import date
 from typing import Any
 
+import duckdb
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -421,7 +422,7 @@ def _build_scope_clarification(scenario_key: str, is_en: bool) -> str:
         if is_en:
             return (
                 "🔍 **Scope Clarification — Bulk Packaging Returns**\n\n"
-                "To structure an audit-ready query against `koro_marts.mart_product_performance`:\n"
+                "To structure an audit-ready query against `main_gold.mart_product_performance`:\n"
                 "1. **Metric Formula**: Calculate `return_rate` by **Units (`returned_units / sold_units`)**?\n"
                 "2. **Dimension**: Group by **Packaging Size (`1kg` vs `500g`)** in Nuts & Butters?\n"
                 "3. **Time Window**: Use the standard **Last 90 Days** window?\n\n"
@@ -429,7 +430,7 @@ def _build_scope_clarification(scenario_key: str, is_en: bool) -> str:
             )
         return (
             "🔍 **口徑釐清 — 大包裝退貨歸因分析**\n\n"
-            "為了針對金牌層 `koro_marts.mart_product_performance` 建立合規查詢：\n"
+            "為了針對金牌層 `main_gold.mart_product_performance` 建立合規查詢：\n"
             "1. **指標公式**：退貨率是否依 **件數 (`returned_units / sold_units`)** 計算？\n"
             "2. **分析維度**：是否按 **包裝規格 (`1kg` vs `500g`)** 比較堅果品類的瑕疵原因？\n"
             "3. **時間範圍**：是否鎖定 **過去 90 天**？\n\n"
@@ -556,41 +557,55 @@ def compile_analytical_spec(
     project_id: str = "koro-analytics-poc",
     is_en: bool = True,
 ) -> OnDemandInsightResult:
-    """Compile a confirmed AnalyticalSpecContract into an OnDemandInsightResult from Silver Kimball Star Schema."""
-    df_items = data_dict.get("fct_order_items", pd.DataFrame())
-    df_prod = data_dict.get("dim_products", pd.DataFrame())
+    """Compile a confirmed AnalyticalSpecContract into an OnDemandInsightResult from Gold Mart table."""
     returns_df = data_dict.get("fct_returns", pd.DataFrame())
 
-    # Dynamically compile product performance mart from Silver fact & dim
-    if not df_items.empty and not df_prod.empty:
-        agg_items = df_items.groupby("product_id", as_index=False).agg(
-            sold_units=("quantity_sold", "sum"),
-            gross_revenue_eur=("line_gross_eur", "sum"),
-            discount_eur=("line_discount_eur", "sum"),
-            refunded_eur=("line_refund_eur", "sum"),
-            net_revenue_eur=("line_net_eur", "sum"),
-            cogs_eur=("cogs_eur", "sum"),
-        )
-        agg_ret = returns_df.groupby("product_id", as_index=False).agg(
-            returned_units=("returned_units", "sum")
-        ) if not returns_df.empty else pd.DataFrame(columns=["product_id", "returned_units"])
-        gold_df = pd.merge(df_prod, agg_items, on="product_id", how="left")
-        gold_df = pd.merge(gold_df, agg_ret, on="product_id", how="left")
-        gold_df["returned_units"] = gold_df["returned_units"].fillna(0).astype(int)
-        gold_df["sold_units"] = gold_df["sold_units"].fillna(0).astype(int)
-        gold_df["return_rate_pct"] = (
-            gold_df["returned_units"] * 100.0 / gold_df["sold_units"].replace(0, np.nan)
-        ).round(2).fillna(0.0)
-        gold_df["net_margin_eur"] = (gold_df["net_revenue_eur"] - gold_df["cogs_eur"]).round(2)
-        gold_df["net_margin_pct"] = (
-            gold_df["net_margin_eur"] * 100.0 / gold_df["net_revenue_eur"].replace(0, np.nan)
-        ).round(2).fillna(0.0)
-        gold_df["days_of_supply"] = (
-            gold_df["stock_on_hand"]
-            / (gold_df["sold_units"] / 90.0).replace(0, np.nan)
-        ).round(1).fillna(0.0)
+    # Direct query against governed Gold Mart (Zero-Facade Directive)
+    db_path = os.path.join(_ROOT_DIR, "data", "koro_lakehouse.duckdb")
+    if "mart_product_performance" in data_dict and not data_dict["mart_product_performance"].empty:
+        gold_df = data_dict["mart_product_performance"].copy()
+    elif os.path.exists(db_path):
+        con = duckdb.connect(db_path, read_only=True)
+        try:
+            gold_df = con.execute("SELECT * FROM main_gold.mart_product_performance").df()
+        finally:
+            con.close()
     else:
-        gold_df = pd.DataFrame()
+        df_items = data_dict.get("fct_order_items", pd.DataFrame())
+        df_prod = data_dict.get("dim_products", pd.DataFrame())
+        if not df_items.empty and not df_prod.empty:
+            agg_items = df_items.groupby("product_id", as_index=False).agg(
+                sold_units=("quantity_sold", "sum"),
+                gross_revenue_eur=("line_gross_eur", "sum"),
+                discount_eur=("line_discount_eur", "sum"),
+                refunded_eur=("line_refund_eur", "sum"),
+                net_revenue_eur=("line_net_eur", "sum"),
+                cogs_eur=("cogs_eur", "sum"),
+            )
+            agg_ret = (
+                returns_df.groupby("product_id", as_index=False).agg(
+                    returned_units=("returned_units", "sum")
+                )
+                if not returns_df.empty
+                else pd.DataFrame(columns=["product_id", "returned_units"])
+            )
+            gold_df = pd.merge(df_prod, agg_items, on="product_id", how="left")
+            gold_df = pd.merge(gold_df, agg_ret, on="product_id", how="left")
+            gold_df["returned_units"] = gold_df["returned_units"].fillna(0).astype(int)
+            gold_df["sold_units"] = gold_df["sold_units"].fillna(0).astype(int)
+            gold_df["return_rate_pct"] = (
+                gold_df["returned_units"] * 100.0 / gold_df["sold_units"].replace(0, np.nan)
+            ).round(2).fillna(0.0)
+            gold_df["net_margin_eur"] = (gold_df["net_revenue_eur"] - gold_df["cogs_eur"]).round(2)
+            gold_df["net_margin_pct"] = (
+                gold_df["net_margin_eur"] * 100.0 / gold_df["net_revenue_eur"].replace(0, np.nan)
+            ).round(2).fillna(0.0)
+            gold_df["days_of_supply"] = (
+                gold_df["stock_on_hand"]
+                / (gold_df["sold_units"] / 90.0).replace(0, np.nan)
+            ).round(1).fillna(0.0)
+        else:
+            gold_df = pd.DataFrame()
 
     start_str = start_date.isoformat() if start_date else "2026-08-03"
     end_str = end_date.isoformat() if end_date else "2026-10-31"
@@ -642,18 +657,17 @@ def compile_analytical_spec(
         )
 
         executed_sql = (
-            f"-- Spec ID: {spec_contract.spec_id} | Governed Gold Mart Query\n"
+            f"-- Spec ID: {spec_contract.spec_id} | Governed DuckDB Gold Mart Query\n"
             f"SELECT\n"
             f"    p.product_id,\n"
             f"    p.product_name,\n"
             f"    p.packaging_size,\n"
             f"    p.sold_units,\n"
             f"    p.returned_units,\n"
-            f"    ROUND(p.returned_units * 100.0 / NULLIF(p.sold_units, 0), 2) AS return_rate_pct,\n"
+            f"    p.return_rate_pct,\n"
             f"    p.refunded_eur\n"
-            f"FROM `{project_id}.koro_marts.mart_product_performance` AS p\n"
+            f"FROM main_gold.mart_product_performance AS p\n"
             f"WHERE p.category_name = 'Nuts & Butters'\n"
-            f"  AND p.order_date BETWEEN '{start_str}' AND '{end_str}'\n"
             f"ORDER BY return_rate_pct DESC;"
         )
 
@@ -663,7 +677,7 @@ def compile_analytical_spec(
             "- **Canonical Formula**: `ROUND(SUM(returned_units) * 100.0 / NULLIF(SUM(sold_units), 0), 2)`\n"
             "- **Semantic Source**: `semantic/business_rules.yaml#return_rate`\n"
             "- **Data Contracts**: `contracts/returns.yaml` (`contains_pii: false`), `contracts/products.yaml`\n"
-            "- **dbt Model Lineage**: `raw_returns` + `raw_shopware_orders` ➔ `int_returns_enriched` ➔ `mart_product_performance`"
+            "- **dbt Model Lineage**: `raw_returns` ➔ `stg_returns` ➔ `fct_returns` ➔ `mart_product_performance`"
         )
 
         snippet_cols = [
@@ -681,7 +695,7 @@ def compile_analytical_spec(
             executive_takeaway=takeaway,
             figure=fig,
             executed_sql=executed_sql,
-            source_table_label=f"{project_id}.koro_marts.mart_product_performance",
+            source_table_label="main_gold.mart_product_performance",
             lineage_markdown=lineage_md,
             df_snippet=nuts_df[snippet_cols].head(5),
             governance_badges=[
@@ -741,8 +755,7 @@ def compile_analytical_spec(
             f"    SUM(gross_revenue_eur) AS gross_revenue_eur,\n"
             f"    SUM(net_revenue_eur) AS net_revenue_eur,\n"
             f"    ROUND((SUM(net_revenue_eur) - SUM(cogs_eur)) * 100.0 / NULLIF(SUM(net_revenue_eur), 0), 2) AS net_margin_pct\n"
-            f"FROM `{project_id}.koro_marts.mart_product_performance`\n"
-            f"WHERE order_date BETWEEN '{start_str}' AND '{end_str}'\n"
+            f"FROM main_gold.mart_product_performance\n"
             f"GROUP BY category_name\n"
             f"ORDER BY net_margin_pct DESC;"
         )
@@ -752,7 +765,8 @@ def compile_analytical_spec(
             "- **Metric Keys**: `net_revenue`, `net_margin_pct`\n"
             "- **Canonical Formula**: `ROUND((SUM(net_revenue_eur) - SUM(cogs_eur)) * 100.0 / NULLIF(SUM(net_revenue_eur), 0), 2)`\n"
             "- **Semantic Source**: `semantic/business_rules.yaml#net_margin_pct`\n"
-            "- **Data Contracts**: `contracts/order_items.yaml`, `contracts/products.yaml` (`contains_pii: false`)"
+            "- **Data Contracts**: `contracts/order_items.yaml`, `contracts/products.yaml` (`contains_pii: false`)\n"
+            "- **dbt Model Lineage**: `raw_order_items` ➔ `stg_order_items` ➔ `fct_order_items` ➔ `mart_product_performance`"
         )
 
         return OnDemandInsightResult(
@@ -761,7 +775,7 @@ def compile_analytical_spec(
             executive_takeaway=takeaway,
             figure=fig,
             executed_sql=executed_sql,
-            source_table_label=f"{project_id}.koro_marts.mart_product_performance",
+            source_table_label="main_gold.mart_product_performance",
             lineage_markdown=lineage_md,
             df_snippet=cat_df.head(5),
             governance_badges=[
@@ -807,7 +821,7 @@ def compile_analytical_spec(
         f"    is_available,\n"
         f"    stock_on_hand,\n"
         f"    days_of_supply\n"
-        f"FROM `{project_id}.koro_marts.mart_product_performance`\n"
+        f"FROM main_gold.mart_product_performance\n"
         f"ORDER BY is_available ASC, days_of_supply ASC;"
     )
 
@@ -816,7 +830,8 @@ def compile_analytical_spec(
         "- **Metric Key**: `product_availability` (`Catalog Availability Rate`)\n"
         "- **Canonical Formula**: `ROUND(SUM(CASE WHEN is_available THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)`\n"
         "- **Semantic Source**: `semantic/business_rules.yaml#product_availability`\n"
-        "- **Data Contracts**: `contracts/products.yaml#is_available` (`contains_pii: false`)"
+        "- **Data Contracts**: `contracts/products.yaml#is_available` (`contains_pii: false`)\n"
+        "- **dbt Model Lineage**: `raw_products` ➔ `stg_products` ➔ `dim_products` ➔ `mart_product_performance`"
     )
 
     snippet_cols = [
@@ -834,7 +849,7 @@ def compile_analytical_spec(
         executive_takeaway=takeaway,
         figure=fig,
         executed_sql=executed_sql,
-        source_table_label=f"{project_id}.koro_marts.mart_product_performance",
+        source_table_label="main_gold.mart_product_performance",
         lineage_markdown=lineage_md,
         df_snippet=inv_df[snippet_cols].head(5),
         governance_badges=[

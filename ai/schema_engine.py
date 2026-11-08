@@ -6,15 +6,39 @@ extracts structural metadata, and resolves join paths for dbt model compilation.
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import Any
+from dataclasses import dataclass, field
+import duckdb
 import pandas as pd
+
+_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 class DatabaseReflectionService:
-    """Service to discover and reflect on Kimball Star Schema tables."""
+    """Service to discover and reflect on Kimball Star Schema tables from physical warehouse or dictionary."""
 
-    def __init__(self, data_dict: dict[str, pd.DataFrame]) -> None:
-        self.data_dict = data_dict
+    def __init__(
+        self,
+        data_dict: dict[str, pd.DataFrame] | None = None,
+        db_path: str | None = None,
+    ) -> None:
+        if data_dict is not None:
+            self.data_dict = data_dict
+            self.db_path = db_path
+        else:
+            default_db = db_path or os.path.join(_ROOT_DIR, "data", "koro_lakehouse.duckdb")
+            self.db_path = default_db
+            self.data_dict = {}
+            if os.path.exists(default_db):
+                con = duckdb.connect(default_db, read_only=True)
+                try:
+                    tables = con.execute("SHOW TABLES").fetchall()
+                    for (t_name,) in tables:
+                        self.data_dict[t_name] = con.execute(f"SELECT * FROM {t_name}").df()
+                finally:
+                    con.close()
 
     def get_available_tables(self) -> list[str]:
         """Return list of conformed Silver/Bronze table names available in the data dictionary."""

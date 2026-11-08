@@ -11,22 +11,38 @@ fields:
     type: string
     required: true
     description: "Foreign key to orders.order_id"
+  - name: order_date
+    type: date
+    required: true
+    description: "Date of order placement"
   - name: product_id
     type: string
     required: true
     description: "Foreign key to products.product_id"
-  - name: sold_units
+  - name: quantity_sold
     type: integer
     required: true
     description: "Quantity of product units purchased"
-  - name: gross_revenue_eur
+  - name: line_gross_eur
     type: decimal
     required: true
     description: "Line item gross revenue before discounts"
-  - name: net_revenue_eur
+  - name: line_discount_eur
+    type: decimal
+    required: true
+    description: "Line item discount amount"
+  - name: line_refund_eur
+    type: decimal
+    required: true
+    description: "Line item refunded amount"
+  - name: line_net_eur
     type: decimal
     required: true
     description: "Line item net revenue after discounts and refunds"
+  - name: cogs_eur
+    type: decimal
+    required: true
+    description: "Cost of goods sold for line item"
 metadata:
   source: shopware_6_api_synthetic
   owner: analytics_engineering

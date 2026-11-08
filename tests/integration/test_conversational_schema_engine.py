@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import pytest
 from ai.schema_engine import DatabaseReflectionService, compile_dbt_and_schema_contract
-from ingestion.synthetic_medallion import build_koro_medallion_data
+from koro_adapter import KoroAdapter
 
 
 def test_schema_reflection_discovers_kimball_models() -> None:
-    """Verify that reflection service extracts conformed Kimball facts and dimensions accurately."""
-    data = build_koro_medallion_data()
+    """Verify that reflection service extracts conformed Kimball facts and dimensions accurately from DuckDB."""
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
     reflection = DatabaseReflectionService(data)
 
     models = reflection.get_kimball_models()
@@ -30,7 +31,8 @@ def test_schema_reflection_discovers_kimball_models() -> None:
 
 def test_schema_reflection_resolves_standard_kimball_joins() -> None:
     """Verify join path resolution between facts and dimensions."""
-    data = build_koro_medallion_data()
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
     reflection = DatabaseReflectionService(data)
 
     joins = reflection.resolve_join_paths(["dim_products", "fct_order_items", "fct_returns"])
@@ -40,7 +42,8 @@ def test_schema_reflection_resolves_standard_kimball_joins() -> None:
 
 def test_end_to_end_conversational_schema_synthesis_and_dry_run() -> None:
     """Verify natural language request generates valid dbt SQL, schema.yml, and passes in-memory dry-run."""
-    data = build_koro_medallion_data()
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
     reflection = DatabaseReflectionService(data)
 
     result = compile_dbt_and_schema_contract(

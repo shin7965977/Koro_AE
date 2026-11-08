@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: mart_product_performance
+    description: "Gold aggregate mart unifying product sales, returns, margin, and velocity"
+    columns:
+      - name: product_id
+        description: "Primary key for SKU in mart"
+        tests:
+          - unique
+          - not_null
+      - name: product_name
+        tests:
+          - not_null
+      - name: category_name
+        tests:
+          - not_null
+      - name: sold_units
+        tests:
+          - not_null
+      - name: net_revenue_eur
+        tests:
+          - not_null
+      - name: return_rate_pct
+        tests:
+          - not_null

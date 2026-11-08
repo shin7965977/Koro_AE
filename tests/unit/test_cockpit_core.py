@@ -103,7 +103,7 @@ def test_analytical_spec_contract_and_on_demand_insight_result_shape() -> None:
         executive_takeaway="1kg Cashews exhibit a 5.2% return rate, 78% caused by vacuum seal defects.",
         figure=fig,
         executed_sql="SELECT packaging_size, return_rate_pct FROM mart_product_performance",
-        source_table_label="koro_marts.mart_product_performance",
+        source_table_label="main_gold.mart_product_performance",
         lineage_markdown="### Metric Lineage\n- **return_rate**: `SUM(returned_units) / SUM(sold_units)`",
         df_snippet=df_snip,
         governance_badges=["FinOps: 4.2 MB / 100 MB", "GDPR: No PII Exposed", "dbt Tests: PASS"],

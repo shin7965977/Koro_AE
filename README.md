@@ -1,8 +1,8 @@
 # KoRo Analytics Engineering & AI-ready Data Platform POC
 
 [![CI Pipeline](https://github.com/your-org/koro-analytics-engineering-poc/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/koro-analytics-engineering-poc/actions)
-[![dbt](https://img.shields.io/badge/dbt-1.7-orange.svg)](https://www.getdbt.com/)
-[![BigQuery](https://img.shields.io/badge/GCP-BigQuery-blue.svg)](https://cloud.google.com/bigquery)
+[![dbt](https://img.shields.io/badge/dbt-1.8-orange.svg)](https://www.getdbt.com/)
+[![DuckDB](https://img.shields.io/badge/OLAP-DuckDB-yellow.svg)](https://duckdb.org/)
 [![Streamlit](https://img.shields.io/badge/Dashboard-Streamlit-red.svg)](https://streamlit.io/)
 
 An end-to-end Analytics Engineering and AI-ready Data Platform proof-of-concept (POC) built for e-commerce (KoRo). It transforms raw operational and public web data into trusted, reusable dimensional data assets, power traditional BI dashboards, and exposes semantic context to AI-powered self-service analytics.
@@ -24,10 +24,10 @@ flowchart LR
         I2[Pydantic Data Contracts]
     end
 
-    subgraph Medallion [BigQuery Data Warehouse]
-        B1[(Bronze / Raw)]
-        B2[(Silver / Staging & Int)]
-        B3[(Gold / Marts & Star Schema)]
+    subgraph Medallion [DuckDB Lakehouse In-Process OLAP]
+        B1[(Bronze / Raw Parquet)]
+        B2[(Silver / Kimball Star Schema)]
+        B3[(Gold / Governed Marts)]
     end
 
     subgraph Semantic [Semantic & Knowledge Layer]
@@ -58,16 +58,17 @@ flowchart LR
 ├── .github/workflows/ci.yml     # Automated CI testing and validation
 ├── ai/                          # AI Assistant, tools, LLM clients & prompts
 ├── contracts/                   # Data contract specifications (YAML)
-├── dashboard/                   # Streamlit BI application
+├── data/                        # Physical Lakehouse storage (bronze/*.parquet, duckdb)
+├── dbt_koro/                    # dbt project (Bronze, Silver, Gold models & tests)
 ├── docs/                        # Specifications, mappings, and data dictionaries
 ├── evaluation/                  # Benchmark questions & AI evaluation framework
 ├── ingestion/                   # Python scrapers, Shopware API clients, validators
 ├── knowledge/                   # Taxonomy, ontology definitions & graph builders
 ├── metadata/                    # Data catalog and business glossary
 ├── monitoring/                  # Data quality tests & LLM observability
+├── scripts/                     # Pipeline orchestrators (run_pipeline.py)
 ├── semantic/                    # Metric definitions and business rules
 ├── tests/                       # Unit, integration, and regression tests
-├── warehouse/dbt_project/       # dbt project (Bronze, Silver, Gold models)
 ├── .env.example                 # Environment variable templates
 ├── requirements.txt             # Python dependencies
 └── README.md                    # Project documentation
@@ -87,22 +88,19 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-### 2. Run Ingestion Pipelines
+### 2. Run Lakehouse Pipeline (Ingest Bronze + dbt Run + dbt Test)
 ```bash
-python ingestion/main.py --source all
+python scripts/run_pipeline.py
 ```
 
-### 3. Run dbt Transformations & Data Quality Tests
+### 3. Run Test Suite
 ```bash
-cd warehouse/dbt_project
-dbt deps
-dbt run
-dbt test
+pytest -v
 ```
 
-### 4. Launch BI Dashboard & AI Assistant
+### 4. Launch BI Cockpit & AI Copilot
 ```bash
-streamlit run dashboard/app.py
+streamlit run app.py
 ```
 
 ---

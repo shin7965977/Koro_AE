@@ -255,42 +255,36 @@ class KoroAdapter(BaseCockpitAdapter):
             start_date: date | None = None,
             end_date: date | None = None,
         ) -> None:
-            # Dynamically compute Gold Mart view from Silver facts & dimensions on the fly
-            df_items = data_dict.get("fct_order_items", pd.DataFrame())
-            df_prod = data_dict.get("dim_products", pd.DataFrame())
+            # Load Gold Mart directly from governed DuckDB warehouse
+            gold_df = data_dict.get("mart_product_performance", pd.DataFrame())
             st.caption(
-                "⚖️ **Kimball Gold Mart**: Dynamically aggregated from Silver `fct_order_items` & `dim_products`."
+                "⚖️ **Kimball Gold Mart**: Governed aggregated table `main_gold.mart_product_performance` compiled by dbt."
+                if is_en
+                else "⚖️ **Kimball Gold Mart**: 由 dbt 編譯並實體化之 `main_gold.mart_product_performance` 聚合資料表。"
             )
-            if not df_items.empty and not df_prod.empty:
-                merged = df_items.groupby("product_id", as_index=False).agg(
-                    total_sold_units=("quantity_sold", "sum"),
-                    net_revenue_eur=("line_net_eur", "sum"),
-                )
-                gold_df = pd.merge(df_prod, merged, on="product_id", how="left")
+            if not gold_df.empty:
                 fig = px.bar(
                     gold_df.sort_values("net_revenue_eur", ascending=True),
                     x="net_revenue_eur",
                     y="product_name",
                     color="category_name",
                     orientation="h",
-                    title="Gold Mart Dynamic View: Net Revenue by SKU & Category (EUR)",
+                    title="Gold Mart View: Net Revenue by SKU & Category (EUR)",
                     labels={"net_revenue_eur": "Net Revenue (€)", "product_name": "Product"},
                 )
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                gold_df = pd.DataFrame()
 
             render_sql_snippet_module(
                 module_id="gold_dynamic_mart",
-                title_en="Gold View Compiled via dbt (`koro_marts.mart_product_performance`)",
-                source_table_label=f"{self.project_id}.koro_marts.mart_product_performance",
+                title_en="Gold View Compiled via dbt (`main_gold.mart_product_performance`)",
+                source_table_label="main_gold.mart_product_performance",
                 sql_template=(
                     "SELECT \n"
                     "    p.product_id, p.product_name, p.category_name, p.packaging_size,\n"
                     "    SUM(i.quantity_sold) AS total_sold_units,\n"
                     "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur\n"
-                    "FROM `koro_silver.dim_products` p\n"
-                    "JOIN `koro_silver.fct_order_items` i USING (product_id)\n"
+                    "FROM main_silver.dim_products p\n"
+                    "JOIN main_silver.fct_order_items i USING (product_id)\n"
                     "WHERE i.order_date BETWEEN '{start_str}' AND '{end_str}'\n"
                     "GROUP BY p.product_id, p.product_name, p.category_name, p.packaging_size\n"
                     "ORDER BY net_revenue_eur DESC;"
@@ -436,6 +430,7 @@ class KoroAdapter(BaseCockpitAdapter):
             fct_orders = con.execute("SELECT * FROM main_silver.fct_orders").df()
             fct_order_items = con.execute("SELECT * FROM main_silver.fct_order_items").df()
             fct_returns = con.execute("SELECT * FROM main_silver.fct_returns").df()
+            mart_product_performance = con.execute("SELECT * FROM main_gold.mart_product_performance").df()
         finally:
             con.close()
 
@@ -475,6 +470,7 @@ class KoroAdapter(BaseCockpitAdapter):
             "fct_orders": fct_orders,
             "fct_order_items": fct_order_items,
             "fct_returns": fct_returns,
+            "mart_product_performance": mart_product_performance,
         }
 
 

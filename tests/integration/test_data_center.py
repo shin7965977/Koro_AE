@@ -27,7 +27,7 @@ def test_elementary_report_contains_official_observability_elements(tmp_path: Pa
     assert "Dashboard" in html
     assert "Lineage" in html
     assert "Model Duration" in html
-    assert "platzi_transform" in html or "koro_lakehouse_prod" in html
+    assert "koro_lakehouse_prod" in html
 
     # Test file export
     out_file = tmp_path / "reports" / "elementary_report.html"

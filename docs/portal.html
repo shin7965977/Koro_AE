@@ -279,12 +279,12 @@
       <h2>Enterprise Dual-Engine DataOps Control Center</h2>
       <p>
         Combining <strong>Elementary Data</strong> (real-time test telemetry, anomaly detection, schema tracking) with <strong>dbt Docs</strong> 
-        (commercial data catalog, column dictionary, interactive end-to-end lineage), achieving a 100% Serverless Zero-Ops architecture on Google Cloud & Kimball Star Schema.
+        (commercial data catalog, column dictionary, interactive end-to-end lineage), achieving a Zero-Facade In-Process Lakehouse architecture powered by DuckDB & Kimball Star Schema.
       </p>
       <div class="meta-tags">
-        <span class="meta-tag">GCP Project: <strong>koro-analytics-poc</strong></span>
+        <span class="meta-tag">Database: <strong>data/koro_lakehouse.duckdb</strong></span>
         <span class="meta-tag">Hosting: <strong>GitHub Pages (Zero-Ops)</strong></span>
-        <span class="meta-tag">Warehouse: <strong>Google BigQuery</strong></span>
+        <span class="meta-tag">Warehouse Engine: <strong>DuckDB OLAP + dbt-duckdb</strong></span>
         <span class="meta-tag">Architecture: <strong>Ralph Kimball Star Schema</strong></span>
       </div>
     </div>
@@ -305,7 +305,7 @@
           <ul class="feature-list">
             <li><i class="fa-solid fa-circle-check"></i> <strong>Real-time Test Tracking:</strong> Captures Unique, Not Null, and Referential Integrity violations</li>
             <li><i class="fa-solid fa-circle-check"></i> <strong>Statistical Anomaly Detection:</strong> Monitors volume anomalies and freshness delays</li>
-            <li><i class="fa-solid fa-circle-check"></i> <strong>Execution Time Profiling:</strong> Analyzes BigQuery runtime for models and tests</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Execution Time Profiling:</strong> Analyzes DuckDB runtime for models and tests</li>
           </ul>
         </div>
         <div class="btn-group">
@@ -323,10 +323,10 @@
           </div>
           <h3 class="card-title">dbt Enterprise Data Catalog & End-to-End Lineage</h3>
           <p class="card-desc">
-            Official native data dictionary and lineage hub, exposing 40+ models and column definitions across Silver clean layers and Gold data marts.
+            Official native data dictionary and lineage hub, exposing conformed models and column definitions across Silver clean layers and Gold data marts.
           </p>
           <ul class="feature-list">
-            <li><i class="fa-solid fa-circle-check"></i> <strong>Comprehensive Data Catalog:</strong> Live BigQuery schema types and business metadata descriptions</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Comprehensive Data Catalog:</strong> Live DuckDB schema types and business metadata descriptions</li>
             <li><i class="fa-solid fa-circle-check"></i> <strong>Interactive Lineage DAG:</strong> Traceability from Bronze raw ingest to Silver cleaned and Gold marts</li>
             <li><i class="fa-solid fa-circle-check"></i> <strong>Instant Global Search:</strong> Query models, tags, and column definitions in milliseconds</li>
           </ul>

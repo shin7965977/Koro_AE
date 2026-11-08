@@ -1,5 +1,5 @@
 view: mart_product_performance {
-  sql_table_name: `@{GCP_PROJECT}.koro_marts.mart_product_performance` ;;
+  sql_table_name: main_gold.mart_product_performance ;;
   label: "KoRo Product & Sales Intelligence"
 
   # ----------------------------------------------------------------------
@@ -78,7 +78,7 @@ view: mart_product_performance {
 
   measure: unit_return_rate {
     type: number
-    sql: ROUND(SAFE_DIVIDE(${total_returned_units} * 100.0, ${total_sold_units}), 2) ;;
+    sql: ROUND(CAST(${total_returned_units} AS DOUBLE) * 100.0 / NULLIF(${total_sold_units}, 0), 2) ;;
     value_format: "0.00\%"
     description: "Percentage of sold units returned (Target threshold <= 2.50%)"
   }
