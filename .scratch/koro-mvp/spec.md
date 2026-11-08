@@ -31,10 +31,10 @@ Build a decoupled **Conversational Spec Guidance & Traceable Chart Engine** usin
 11. As a demo presenter, I want a `New Inquiry` reset button in the drawer to clear chat history, pending specs, and on-demand charts in one click, so that I can switch demo scenarios cleanly.
 12. As a bilingual team member, I want to toggle between English and Traditional Chinese in the sidebar, updating KPI cards, tabs, and guidance prompts.
 13. As a platform architect, I want the spec card lifecycle and on-demand insight panel implemented generically in `lakehouse-cockpit-core` via `BaseCockpitAdapter`, so that other domain projects inherit this capability automatically.
-14. As a presenter, I want a dual-mode engine (Live Gemini API + deterministic local fallback) backed by a self-contained DuckDB/Pandas Medallion dataset, so that live demos never fail due to network or cloud credential issues.
+14. As an Analytics Engineer, I want a robust self-healing Lakehouse engine that automatically executes pipeline seeding (Bronze Parquet -> DuckDB) on startup if the database file is missing, guaranteeing 100% physical SQL execution without in-memory synthetic fallbacks.
 
 ## Implementation Decisions
 
 - Extend `lakehouse-cockpit-core` with `AnalyticalSpecContract` and `OnDemandInsightResult` dataclasses, plus default hook methods on `BaseCockpitAdapter` (`get_quick_presets`, `handle_spec_inquiry_turn`, `compile_spec_to_insight`).
 - Upgrade `lakehouse-cockpit-core` engine and AI drawer to render the `On-Demand Insight Panel` (below the 4 KPI cards) and the 2-round Spec Confirmation workflow with a `New Inquiry` reset button.
-- Build `Koro_AE` with YAML Data Contracts (`contracts/`), YAML Semantic Rules (`semantic/`), deterministic synthetic Medallion data (Bronze/Silver/Gold), `KoroAdapter`, Socratic Spec Engine, and an automated 12-question Benchmark Evaluation suite.
+- Build `Koro_AE` with YAML Data Contracts (`contracts/`), YAML Semantic Rules (`semantic/`), physical Lakehouse storage (`data/bronze/*.parquet`, `data/koro_lakehouse.duckdb`), `KoroAdapter`, Socratic Spec Engine, and an automated 12-question Benchmark Evaluation suite.

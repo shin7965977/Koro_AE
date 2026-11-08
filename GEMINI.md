@@ -32,3 +32,11 @@
 - **Data Contracts**: Every model in Silver and Gold must declare column-level tests (`unique`, `not_null`, `relationships`) in `schema.yml`.
 - **Pre-Commit Verification**: All 18+ dbt data contract tests and all pytest suites must achieve **100% PASS** on physical database files.
 - **CI Guarantee**: GitHub Actions (`.github/workflows/ci.yml`) must execute `python scripts/run_pipeline.py` (ingestion, dbt run, dbt test) before running `pytest`.
+
+---
+
+## 5. Anti-Smell Governance Rules (Goldfish Standard)
+- **5.1 Single Source of Syntax**: All queries, documentation, and LookML must strictly use DuckDB / ANSI SQL standard with `main_silver.*` and `main_gold.*` schema paths. Pseudo-dialects (e.g. BigQuery backticks, `SAFE_DIVIDE`, unmounted `koro_marts.*`) are strictly prohibited.
+- **5.2 Code-Contract Bi-directional Lock**: Data contracts (`contracts/*.yaml`) and semantic rules (`semantic/*.yaml`) must strictly match physical dbt models in `dbt_koro/models/**/schema.yml`. Fact tables must not declare dimension-owned attributes as atomic required columns (e.g. `packaging_size` belongs to `dim_products`, not `fct_returns`).
+- **5.3 Eliminate Presentation-Only Fallbacks**: Applications must never maintain shadow in-memory datasets for demo fault-tolerance. Missing database files must trigger automated pipeline seeding (`scripts/run_pipeline.py`) rather than bypassing the database engine.
+- **5.4 Honest Observability & Strict Testing**: Tests must never use accommodating `or` assertions to mask legacy artifacts (e.g. `assert "platzi" in html or "koro" in html`). Any presence of obsolete legacy tokens constitutes an immediate test failure.

@@ -1,28 +1,32 @@
 entity: returns
 version: "1.0"
-description: "Product return and quality defect events (synthetic operational records)."
+description: "Product return and quality defect events (operational records aligned with Kimball fct_returns)."
 fields:
   - name: return_id
     type: string
     required: true
     unique: true
     description: "Unique return event identifier"
+  - name: order_id
+    type: string
+    required: true
+    description: "Foreign key to orders.order_id"
   - name: product_id
     type: string
     required: true
-    description: "Foreign key to products.product_id"
+    description: "Foreign key to dim_products.product_id"
   - name: return_date
     type: date
     required: true
     description: "Date when return was registered"
-  - name: packaging_size
-    type: string
-    required: true
-    description: "Packaging specification (1kg, 500g, 250g)"
   - name: return_reason
     type: string
     required: true
     description: "Standardized return reason (Vacuum Packaging Defect, Shipping Damage, Taste/Quality, Wrong Item)"
+  - name: defect_severity
+    type: string
+    required: false
+    description: "Operational severity rating of packaging defect"
   - name: returned_units
     type: integer
     required: true
@@ -36,3 +40,4 @@ metadata:
   owner: analytics_engineering
   contains_pii: false
   gdpr_classification: anonymized_operational
+  dimensional_reference: "packaging_size is conformed via dim_products.product_id"
