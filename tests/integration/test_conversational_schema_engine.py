@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from ai.schema_engine import DatabaseReflectionService, compile_dbt_and_schema_contract
+from ai.schema_engine import DatabaseReflectionService, compile_dbt_and_schema_contract, classify_schema_intent
 from koro_adapter import KoroAdapter
 
 
@@ -41,7 +41,7 @@ def test_schema_reflection_resolves_standard_kimball_joins() -> None:
 
 
 def test_end_to_end_conversational_schema_synthesis_and_dry_run() -> None:
-    """Verify natural language request generates valid dbt SQL, schema.yml, and passes in-memory dry-run."""
+    """Verify natural language request generates valid dbt SQL, schema.yml, and passes physical dry-run."""
     adapter = KoroAdapter()
     data = adapter.load_domain_data()
     reflection = DatabaseReflectionService(data)
@@ -52,6 +52,7 @@ def test_end_to_end_conversational_schema_synthesis_and_dry_run() -> None:
         reflection=reflection,
     )
 
+    assert result.is_rejected is False
     assert result.dry_run_success is True
     assert len(result.data_preview) > 0
     assert "return_rate_pct" in result.data_preview.columns
@@ -73,5 +74,48 @@ def test_end_to_end_conversational_schema_synthesis_and_dry_run() -> None:
     assert len(result.audit_trace) >= 4
     trace_steps = [t["step"] for t in result.audit_trace]
     assert "Socratic Clarification" in trace_steps
-    assert "In-Memory DuckDB Dry-Run" in trace_steps
+    assert "Physical DuckDB Dry-Run" in trace_steps
     assert "Governance Verification" in trace_steps
+
+
+def test_out_of_domain_inquiry_triggers_guardrail_rejection() -> None:
+    """Verify that unrelated or gibberish inquiries like '威爾是誰' are rejected by domain guardrails."""
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
+    reflection = DatabaseReflectionService(data)
+
+    result = compile_dbt_and_schema_contract(
+        user_goal="威爾是誰",
+        reflection=reflection,
+    )
+
+    assert result.is_rejected is True
+    assert "REJECTED" in result.spec_id
+    assert "outside lakehouse analytics scope" in result.rejection_reason
+    assert result.dry_run_success is False
+    assert len(result.data_preview) == 0
+    assert result.dbt_sql == ""
+    assert result.schema_yaml == ""
+
+    # Verify audit trace contains rejection step
+    trace_steps = [t["step"] for t in result.audit_trace]
+    assert "Domain Guardrail" in trace_steps
+    guardrail_step = next(t for t in result.audit_trace if t["step"] == "Domain Guardrail")
+    assert guardrail_step["status"] == "BLOCKED"
+
+
+def test_classify_schema_intent_matrix() -> None:
+    """Verify that intent classifier properly routes returns, margins, and rejects gibberish."""
+    # Domain 1: Returns
+    intent_ret, _ = classify_schema_intent("分析 1kg 堅果大包裝退貨率與破損")
+    assert intent_ret == "bulk_returns"
+
+    # Domain 2: Margins
+    intent_margin, _ = classify_schema_intent("計算各品類促銷折價券後的淨毛利率")
+    assert intent_margin == "category_margin"
+
+    # Out of Domain
+    intent_ood, _ = classify_schema_intent("威爾是誰")
+    assert intent_ood is None
+    intent_empty, _ = classify_schema_intent("   ")
+    assert intent_empty is None

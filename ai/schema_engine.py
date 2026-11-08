@@ -114,10 +114,6 @@ class DatabaseReflectionService:
         return joins
 
 
-import duckdb
-from dataclasses import dataclass, field
-
-
 @dataclass
 class SchemaDesignResult:
     """End-to-end outcome of autonomous schema design and dbt compilation."""
@@ -133,22 +129,88 @@ class SchemaDesignResult:
     audit_trace: list[dict[str, str]]
     finops_scan_mb: float = 4.2
     gdpr_verified: bool = True
+    is_rejected: bool = False
+    rejection_reason: str = ""
+
+
+def classify_schema_intent(user_goal: str) -> tuple[str | None, str]:
+    """Classify user analytical goal into recognized lakehouse domain or return None if out-of-domain."""
+    if not user_goal or not user_goal.strip():
+        return None, "Empty user goal."
+
+    cleaned = user_goal.strip().lower()
+
+    # Domain 1: Return Diagnosis (packaging defect, returns, refunds)
+    return_keywords = [
+        "return", "refund", "defect", "damage", "packaging", "1kg", "bulk", "broken",
+        "退貨", "退款", "破損", "包裝", "規格", "瑕疵",
+    ]
+    if any(k in cleaned for k in return_keywords):
+        return "bulk_returns", "SKU Bulk Packaging Return Diagnosis"
+
+    # Domain 2: Margin & Profit Dilution (category margin, discounts, voucher)
+    margin_keywords = [
+        "margin", "profit", "voucher", "discount", "dilution", "cogs",
+        "毛利", "利潤", "折價券", "折扣", "稀釋", "成本",
+    ]
+    if any(k in cleaned for k in margin_keywords):
+        return "category_margin", "Category Profit Margin & Voucher Dilution"
+
+    # Domain 3: General sales / orders analytical criteria
+    sales_keywords = ["revenue", "order", "sales", "營收", "銷售", "訂單", "業績", "gross", "net"]
+    if any(k in cleaned for k in sales_keywords):
+        return "category_margin", "Category Profit Margin & Voucher Dilution"
+
+    return None, "Out-of-Domain"
 
 
 def compile_dbt_and_schema_contract(
-    scenario_key: str,
-    user_goal: str,
-    reflection: DatabaseReflectionService,
+    scenario_key: str | None = None,
+    user_goal: str = "",
+    reflection: DatabaseReflectionService | None = None,
     start_date: str = "2026-08-03",
     end_date: str = "2026-10-31",
 ) -> SchemaDesignResult:
     """Synthesize production-ready dbt SQL model and schema.yml contract based on reflected tables."""
+    # Guardrail intent check
+    matched_scenario, scenario_title = classify_schema_intent(user_goal)
+
+    if matched_scenario is None:
+        # Fallback to explicit scenario_key only if user_goal was empty (backward compatibility)
+        if not user_goal.strip() and scenario_key in ("bulk_returns", "category_margin"):
+            matched_scenario = scenario_key
+            scenario_title = "SKU Bulk Packaging Return Diagnosis" if scenario_key == "bulk_returns" else "Category Profit Margin & Voucher Dilution"
+        else:
+            # Out of domain rejection
+            audit_trace = [
+                {"step": "Socratic Clarification", "status": "REJECTED", "detail": f"Inquiry '{user_goal}' is out of analytical domain."},
+                {"step": "Domain Guardrail", "status": "BLOCKED", "detail": "Lakehouse entity reflection failed: query does not match order, return, margin, or product entities."},
+            ]
+            return SchemaDesignResult(
+                spec_id="REJECTED-OUT_OF_DOMAIN",
+                scenario_title="Out of Domain Inquiry",
+                target_grain="None",
+                upstream_tables=[],
+                dbt_sql="",
+                schema_yaml="",
+                dry_run_success=False,
+                data_preview=pd.DataFrame(),
+                audit_trace=audit_trace,
+                finops_scan_mb=0.0,
+                gdpr_verified=True,
+                is_rejected=True,
+                rejection_reason=(
+                    f"Inquiry '{user_goal}' is outside lakehouse analytics scope. "
+                    "Please specify criteria concerning orders, returns, packaging defects, or category margins."
+                ),
+            )
+
     audit_trace = [
-        {"step": "Socratic Clarification", "status": "COMPLETED", "detail": f"Anchored analytical goal: '{user_goal}'"},
+        {"step": "Socratic Clarification", "status": "COMPLETED", "detail": f"Anchored analytical goal: '{user_goal or scenario_title}'"},
     ]
 
     # Case 1: Return Diagnosis (Packaging Defect)
-    if any(k in scenario_key.lower() or k in user_goal.lower() for k in ["return", "退款", "退貨", "defect", "packaging"]):
+    if matched_scenario == "bulk_returns":
         model_name = "mart_sku_return_diagnosis"
         target_grain = "SKU x Packaging Size"
         upstream_tables = ["dim_products", "fct_order_items", "fct_returns"]
@@ -232,6 +294,10 @@ def compile_dbt_and_schema_contract(
             "          - dbt_expectations.expect_column_values_to_be_between:\n"
             "              min_value: 0\n"
             "              max_value: 100\n"
+            "      - name: net_revenue_eur\n"
+            "        description: 'Net sales revenue generated in EUR.'\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
         )
         scenario_title = "SKU Bulk Packaging Return Diagnosis"
     else:
@@ -298,10 +364,16 @@ def compile_dbt_and_schema_contract(
         {"step": "dbt & Contract Compilation", "status": "COMPLETED", "detail": f"Synthesized '{model_name}.sql' and schema contract."}
     )
 
-    # In-memory DuckDB dry-run
-    con = duckdb.connect(database=":memory:")
-    for t_name, df in reflection.data_dict.items():
-        con.register(t_name, df)
+    # Physical DuckDB dry-run (Zero-Facade Standard)
+    physical_db_path = os.path.join(_ROOT_DIR, "data", "koro_lakehouse.duckdb")
+    if os.path.exists(physical_db_path):
+        con = duckdb.connect(physical_db_path, read_only=True)
+        con.execute("SET search_path = 'main_silver,main_gold,main'")
+    else:
+        con = duckdb.connect(database=":memory:")
+        if reflection and reflection.data_dict:
+            for t_name, df in reflection.data_dict.items():
+                con.register(t_name, df)
 
     # Replace dbt {{ ref('x') }} with table name 'x'
     executable_sql = dbt_sql.replace("{{ ref('", "").replace("') }}", "")
@@ -313,13 +385,13 @@ def compile_dbt_and_schema_contract(
         preview_df = con.execute(executable_sql).df()
         dry_run_ok = True
         audit_trace.append(
-            {"step": "In-Memory DuckDB Dry-Run", "status": "PASSED", "detail": f"Query returned {len(preview_df)} rows with 0 runtime errors."}
+            {"step": "Physical DuckDB Dry-Run", "status": "PASSED", "detail": f"Query returned {len(preview_df)} rows with 0 runtime errors."}
         )
     except Exception as e:
         preview_df = pd.DataFrame()
         dry_run_ok = False
         audit_trace.append(
-            {"step": "In-Memory DuckDB Dry-Run", "status": "FAILED", "detail": str(e)}
+            {"step": "Physical DuckDB Dry-Run", "status": "FAILED", "detail": str(e)}
         )
     finally:
         con.close()
@@ -340,4 +412,5 @@ def compile_dbt_and_schema_contract(
         audit_trace=audit_trace,
         finops_scan_mb=4.2,
         gdpr_verified=True,
+        is_rejected=False,
     )
