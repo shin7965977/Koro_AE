@@ -229,3 +229,33 @@ def test_gemini_rejects_taiwanese_products_via_llm_mock(monkeypatch: pytest.Monk
     assert session.needs_clarification is False
     assert "12 款歐洲堅果" in session.rejection_reason
     assert "dim_products 不含產地" in session.rejection_reason
+
+
+def test_socratic_clarification_for_european_market_inquiry() -> None:
+    """Verify natural language inquiry concerning European country revenue triggers geographic market question."""
+    session = analyze_socratic_inquiry("i would like to know the european countries revenue")
+    assert session.is_out_of_domain is False
+    assert session.needs_clarification is True
+    geo_q = next(q for q in session.questions if q.dimension_type == "geographic")
+    assert "地理市場維度動態解析" in geo_q.title
+    opt_values = [opt["value"] for opt in geo_q.options]
+    assert "DE" in opt_values
+    assert "AT" in opt_values
+    assert "FR" in opt_values
+    assert "ALL_EU" in opt_values
+
+
+def test_dynamic_dbt_synthesis_german_market_revenue() -> None:
+    """Verify selecting German market dynamically compiles and physical dry-runs mart_de_market_revenue."""
+    decisions = {
+        "temporal": "2026-08-03:2026-10-31",
+        "geographic": "DE",
+    }
+    result = synthesize_dynamic_dbt_model("i would like to know the german product's revenue", decisions)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert len(result.data_preview) > 0
+    assert "market_country" in result.data_preview.columns
+    assert "gross_revenue_eur" in result.data_preview.columns
+    assert (result.data_preview["market_country"] == "DE").all()
+    assert "mart_de_market_revenue" in result.dbt_sql

@@ -52,8 +52,9 @@ class SocraticSessionState:
 def get_lakehouse_watermark(
     reflection: DatabaseReflectionService | None = None,
 ) -> dict[str, Any]:
-    """Retrieve min and max transaction dates from physical DuckDB warehouse."""
+    """Retrieve min and max transaction dates and active markets from physical DuckDB warehouse."""
     db_path = os.path.join(_ROOT_DIR, "data", "koro_lakehouse.duckdb")
+    markets = ["DE", "AT", "FR"]
     if os.path.exists(db_path):
         con = duckdb.connect(db_path, read_only=True)
         try:
@@ -62,6 +63,17 @@ def get_lakehouse_watermark(
             ord_min, ord_max = con.execute("SELECT MIN(order_date), MAX(order_date) FROM fct_orders").fetchone()
             max_d = ret_max or ord_max or date(2026, 10, 31)
             min_d = ret_min or ord_min or date(2026, 8, 3)
+            try:
+                db_markets = [
+                    row[0]
+                    for row in con.execute(
+                        "SELECT DISTINCT market_country FROM dim_customers WHERE market_country IS NOT NULL ORDER BY 1"
+                    ).fetchall()
+                ]
+                if db_markets:
+                    markets = db_markets
+            except Exception:
+                pass
         finally:
             con.close()
     else:
@@ -74,6 +86,12 @@ def get_lakehouse_watermark(
 
     rolling_start = (pd.to_datetime(max_d) - pd.Timedelta(days=29)).strftime("%Y-%m-%d")
 
+    market_label_map = {
+        "DE": "🇩🇪 德國市場 (Germany - DE)",
+        "AT": "🇦🇹 奧地利市場 (Austria - AT)",
+        "FR": "🇫🇷 法國市場 (France - FR)",
+    }
+
     return {
         "max_date": max_d.strftime("%Y-%m-%d"),
         "min_date": min_d.strftime("%Y-%m-%d"),
@@ -82,6 +100,8 @@ def get_lakehouse_watermark(
         "current_month_end": month_end,
         "rolling_30_start": rolling_start,
         "rolling_30_end": month_end,
+        "active_markets": markets,
+        "market_label_map": market_label_map,
     }
 
 
@@ -101,6 +121,9 @@ def _call_gemini_socratic(
 
         client = genai.Client(api_key=api_key.strip())
 
+        markets_grounded = watermark.get("active_markets", ["DE", "AT", "FR"])
+        market_list_str = ", ".join(markets_grounded)
+
         system_instruction = (
             "You are the senior Analytics Engineering AI Copilot for the KoRo Lakehouse Platform.\n"
             "Your mission is to evaluate stakeholder inquiries against the physical lakehouse schema, determine domain validity, clarify ambiguities, or strictly reject out-of-domain requests before dbt model compilation.\n\n"
@@ -109,11 +132,12 @@ def _call_gemini_socratic(
             "- Conformed Kimball Silver Tables & Columns:\n"
             "  * dim_products (product_id, product_name, category_id, cost_eur, packaging_size, packaging_type, is_active)\n"
             "  * dim_categories (category_id, category_name)\n"
-            "  * dim_customers (customer_id, country_code, customer_segment)\n"
+            "  * dim_customers (customer_id, market_country, customer_segment)\n"
             "  * fct_orders (order_id, customer_id, order_date, voucher_code, voucher_discount_eur, order_gross_eur, order_net_eur, is_returned)\n"
             "  * fct_order_items (order_item_id, order_id, product_id, quantity, unit_price_eur, line_total_eur)\n"
             "  * fct_returns (return_id, order_id, product_id, return_date, return_reason, refunded_eur, is_damaged_packaging)\n"
             f"- Physical Date Watermarks: Data spans {watermark['min_date']} to {watermark['max_date']}. Latest physical month is {watermark['current_month']} ({watermark['current_month_start']} to {watermark['current_month_end']}).\n"
+            f"- Physical Customer European Sales Markets in Database: {market_list_str} (DE=Germany, AT=Austria, FR=France).\n"
             "- Official Product Catalog (Only these 12 core SKUs exist in this warehouse):\n"
             "  1. PROD-001: Organic Cashew Nuts Broken 1kg (Nuts & Butters)\n"
             "  2. PROD-002: Freeze-Dried Strawberries 100g (Dried Fruits)\n"
@@ -127,18 +151,30 @@ def _call_gemini_socratic(
             "  10. PROD-010: Walnuts Halves 1kg (Nuts & Butters)\n"
             "  11. PROD-011: Roasted Hazelnuts 1kg (Nuts & Butters)\n"
             "  12. PROD-012: Organic Acai Powder 100g (Superfoods & Cooking)\n\n"
-            "Strict Anti-Smell & Domain Boundary Rules (Zero-Facade Standard):\n"
-            "1. CATALOG & GEOGRAPHIC BOUNDARY:\n"
-            "   - KoRo is a European direct-to-consumer eCommerce company selling organic dry goods, nuts, and snacks.\n"
-            "   - The warehouse does NOT have Taiwanese products (台灣商品/台灣產品), nor does dim_products contain any 'origin_country' column.\n"
-            "   - If the user query requests data for products, countries, or entities not in the catalog (e.g. 'taiwanese product', '台灣產品', 'apple iphone', 'tesla', 'weather', 'stock price', 'who is president'), you MUST mark is_out_of_domain=true.\n"
-            "   - NEVER force-map an invalid or missing entity into a generic revenue or return model just because words like 'revenue', 'sales', or 'product' appear.\n"
-            "   - Provide an honest, professional rejection_reason explaining why: e.g., 'KoRo 湖倉現有型錄僅包含 12 款歐洲堅果、果乾、點心與料理粉類 SKU，且 dim_products 不含產地 (origin_country) 或台灣產品資料。為了遵守 Zero-Facade 規範，系統拒絕合成不存在的指標模型。'\n\n"
-            "2. WITHIN DOMAIN CLASSIFICATION:\n"
-            "   - If the user inquiry is valid within the warehouse scope:\n"
-            "     * Temporal Ambiguity: If relative terms ('這個月', '本月', '最近', 'this month', 'recent') are used without explicit ISO dates, add a 'temporal' question offering locked current month vs rolling 30 days.\n"
-            "     * Grain Ambiguity: If query mentions returns/refunds without specifying summary vs event level, add a 'grain' question (return_event vs sku_summary).\n"
-            "     * If unambiguous, set needs_clarification=false, and specify locked_decisions (e.g., {'grain': 'monthly_revenue', 'temporal': f\"{watermark['min_date']}:{watermark['max_date']}\"}).\n\n"
+            "Strict Anti-Smell & Socratic Governance Rules (Zero-Facade Standard):\n"
+            "1. OUT-OF-DOMAIN REJECTIONS:\n"
+            "   - If the user query requests entities completely unrelated to eCommerce data analytics (e.g. 'who is president', 'weather / 天氣', 'tesla / 特斯拉', 'apple iphone', 'stock price', 'joke'), mark is_out_of_domain=true.\n"
+            "   - If the user query asks for product origins from regions entirely outside European eCommerce operations (e.g. 'Taiwanese products / 台灣產品', 'US products', 'Japan products'), mark is_out_of_domain=true with a professional explanation:\n"
+            "     'KoRo 湖倉現有型錄僅包含 12 款歐洲堅果果乾 SKU，且顧客市場僅涵蓋歐洲 3 國 (DE, AT, FR)，無台灣/美國等外部產地資料。依 Zero-Facade 規範，系統拒絕合成不存在的指標模型。'\n\n"
+            "2. SMART GEOGRAPHIC MARKET CLARIFICATION (智慧地理市場引導):\n"
+            "   - In eCommerce, business users often say 'German products revenue', 'Spain product revenue', '歐洲國家商品的 REVENUE', or 'country revenue'.\n"
+            "   - Products do NOT have manufacturing origin_country, BUT dim_customers HAS physical customer market_country: DE, AT, FR.\n"
+            "   - When the user mentions European countries, country revenue, or specific European countries (e.g. 'German', 'Germany', '德國', 'Austria', '奧地利', 'France', '法國', 'Spain', '西班牙', '歐洲國家', '歐洲', '市場', '國別'):\n"
+            "     DO NOT FLATLY REJECT! Instead, guide the user via Socratic Clarification:\n"
+            "     * set is_out_of_domain=false, needs_clarification=true\n"
+            "     * add a question with dimension_type='geographic':\n"
+            "       question_id: 'geographic'\n"
+            "       title: '地理市場維度動態解析 (Market Geographic Intent Resolution)'\n"
+            f"       explanation: '系統已探查實體湖倉：商品維度未設產地，但顧客資料庫中真實記錄了 {len(markets_grounded)} 個歐洲營運市場 ({market_list_str})。請問您希望分析哪一個市場的顧客營收？'\n"
+            "       options:\n"
+            "         - id: 'DE', label: '🇩🇪 德國市場顧客訂單營收 (Germany - DE)', value: 'DE'\n"
+            "         - id: 'AT', label: '🇦🇹 奧地利市場顧客訂單營收 (Austria - AT)', value: 'AT'\n"
+            "         - id: 'FR', label: '🇫🇷 法國市場顧客訂單營收 (France - FR)', value: 'FR'\n"
+            "         - id: 'ALL_EU', label: '🇪🇺 全歐洲 3 國合併營收 (All European Markets)', value: 'ALL_EU'\n\n"
+            "3. TEMPORAL & GRAIN AMBIGUITY:\n"
+            "   - Temporal: If relative terms ('這個月', '本月', '最近', 'this month', 'recent') are used, add a 'temporal' question.\n"
+            "   - Grain: If returns/refunds are mentioned without specifying grain, add a 'grain' question.\n"
+            "   - If completely unambiguous and no clarification needed, set needs_clarification=false.\n\n"
             "Output strictly valid JSON conforming to this schema:\n"
             "{\n"
             "  \"is_out_of_domain\": bool,\n"
@@ -147,13 +183,13 @@ def _call_gemini_socratic(
             "  \"questions\": [\n"
             "    {\n"
             "      \"question_id\": str,\n"
-            "      \"dimension_type\": \"temporal\" | \"grain\",\n"
+            "      \"dimension_type\": \"temporal\" | \"grain\" | \"geographic\",\n"
             "      \"title\": str,\n"
             "      \"explanation\": str,\n"
             "      \"options\": [{\"id\": str, \"label\": str, \"value\": str}]\n"
             "    }\n"
             "  ],\n"
-            "  \"locked_decisions\": {\"grain\": str, \"temporal\": str}\n"
+            "  \"locked_decisions\": {\"grain\": str, \"temporal\": str, \"geographic\": str}\n"
             "}"
         )
 
@@ -239,6 +275,43 @@ def _deterministic_offline_socratic_analysis(
     questions: list[SocraticClarificationQuestion] = []
     locked_decisions: dict[str, str] = {}
     lower_goal = goal_clean.lower()
+
+    # Geographic / Market Ambiguity Detection
+    geo_tokens = [
+        "歐洲", "european", "german", "germany", "德國", "spain", "西班牙",
+        "austria", "奧地利", "france", "法國", "國別", "市場", "country", "market"
+    ]
+    has_geo_intent = any(g in lower_goal for g in geo_tokens)
+
+    if has_geo_intent:
+        pref_id = "DE"
+        if any(k in lower_goal for k in ["austria", "奧地利", "at"]):
+            pref_id = "AT"
+        elif any(k in lower_goal for k in ["france", "法國", "fr"]):
+            pref_id = "FR"
+        elif any(k in lower_goal for k in ["歐洲", "european", "all"]):
+            pref_id = "ALL_EU"
+
+        market_opts = [
+            {"id": "DE", "label": "🇩🇪 德國市場顧客訂單營收 (Germany - DE)", "value": "DE"},
+            {"id": "AT", "label": "🇦🇹 奧地利市場顧客訂單營收 (Austria - AT)", "value": "AT"},
+            {"id": "FR", "label": "🇫🇷 法國市場顧客訂單營收 (France - FR)", "value": "FR"},
+            {"id": "ALL_EU", "label": "🇪🇺 全歐洲 3 國合併營收 (All European Markets)", "value": "ALL_EU"},
+        ]
+        active_mkts = watermark.get("active_markets", ["DE", "AT", "FR"])
+        q_geo = SocraticClarificationQuestion(
+            question_id="geographic",
+            dimension_type="geographic",
+            title="地理市場維度動態解析 (Market Geographic Intent Resolution)",
+            explanation=(
+                f"湖倉實體庫探查完畢：目前顧客維度真實具備 {len(active_mkts)} 個歐洲市場國別（{', '.join(active_mkts)}）。"
+                "商品維度未設產地，請問您希望分析哪一個市場的顧客訂單營收？"
+            ),
+            options=market_opts,
+            selected_option_id=pref_id,
+        )
+        questions.append(q_geo)
+        locked_decisions["geographic"] = pref_id
 
     # Temporal Ambiguity Detection
     temporal_tokens = ["這個月", "本月", "當月", "current month", "this month", "最近", "近期", "最新", "10月", "十月"]
@@ -412,10 +485,130 @@ def synthesize_dynamic_dbt_model(
     else:
         start_date, end_date = "2026-08-03", "2026-10-31"
 
-    grain_val = decisions.get("grain", "return_event")
+    geo_val = decisions.get("geographic")
+    grain_val = decisions.get("grain", "monthly_revenue" if geo_val else "return_event")
 
-    # 2. Dynamic Model Synthesis by Grain
-    if grain_val == "return_event":
+    # 2. Dynamic Model Synthesis by Geographic Market or Grain
+    if geo_val:
+        if geo_val == "ALL_EU":
+            model_name = "mart_european_market_revenue"
+            scenario_title = f"All European Markets Revenue Summary ({start_date} ~ {end_date})"
+            target_grain = "European Market x Product SKU"
+            upstream_tables = ["dim_products", "fct_order_items", "fct_orders", "dim_customers"]
+            dbt_sql = (
+                f"-- Model: {model_name}.sql\n"
+                "{{ config(\n"
+                "    materialized='table',\n"
+                "    schema='gold_marts',\n"
+                "    tags=['revenue', 'market', 'europe', 'governed']\n"
+                ") }}\n\n"
+                "WITH customer_orders AS (\n"
+                "    SELECT\n"
+                "        o.order_id,\n"
+                "        c.market_country\n"
+                "    FROM {{ ref('fct_orders') }} o\n"
+                "    JOIN {{ ref('dim_customers') }} c USING (customer_id)\n"
+                ")\n"
+                "SELECT\n"
+                "    p.product_id,\n"
+                "    p.product_name,\n"
+                "    co.market_country,\n"
+                "    COUNT(DISTINCT i.order_id) AS total_orders,\n"
+                "    SUM(i.quantity_sold) AS total_units_sold,\n"
+                "    ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,\n"
+                "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur\n"
+                "FROM {{ ref('fct_order_items') }} i\n"
+                "JOIN customer_orders co USING (order_id)\n"
+                "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
+                f"WHERE i.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
+                "GROUP BY p.product_id, p.product_name, co.market_country\n"
+                "ORDER BY co.market_country ASC, gross_revenue_eur DESC;"
+            )
+            schema_yaml = (
+                "version: 2\n\n"
+                "models:\n"
+                f"  - name: {model_name}\n"
+                "    description: 'All active European customer markets revenue broken down by product SKU.'\n"
+                "    meta:\n"
+                "      owner: 'finance_analytics'\n"
+                "      contains_pii: false\n"
+                "      gdpr_compliant: true\n"
+                "      data_layer: 'gold'\n"
+                "    columns:\n"
+                "      - name: product_id\n"
+                "        data_type: varchar\n"
+                "        tests: [not_null]\n"
+                "      - name: product_name\n"
+                "        data_type: varchar\n"
+                "        tests: [not_null]\n"
+                "      - name: market_country\n"
+                "        data_type: varchar\n"
+                "        tests: [not_null]\n"
+                "      - name: gross_revenue_eur\n"
+                "        data_type: numeric\n"
+                "        tests: [not_null]\n"
+            )
+        else:
+            country_label = "German" if geo_val == "DE" else ("Austrian" if geo_val == "AT" else "French")
+            model_name = f"mart_{geo_val.lower()}_market_revenue"
+            scenario_title = f"{country_label} Market Revenue Summary ({geo_val}) ({start_date} ~ {end_date})"
+            target_grain = f"Market ({geo_val}) x Product SKU"
+            upstream_tables = ["dim_products", "fct_order_items", "fct_orders", "dim_customers"]
+            dbt_sql = (
+                f"-- Model: {model_name}.sql\n"
+                "{{ config(\n"
+                "    materialized='table',\n"
+                "    schema='gold_marts',\n"
+                f"    tags=['revenue', 'market', '{geo_val.lower()}', 'governed']\n"
+                ") }}\n\n"
+                "WITH customer_orders AS (\n"
+                "    SELECT\n"
+                "        o.order_id,\n"
+                "        c.market_country\n"
+                "    FROM {{ ref('fct_orders') }} o\n"
+                "    JOIN {{ ref('dim_customers') }} c USING (customer_id)\n"
+                f"    WHERE c.market_country = '{geo_val}'\n"
+                ")\n"
+                "SELECT\n"
+                "    p.product_id,\n"
+                "    p.product_name,\n"
+                f"    '{geo_val}' AS market_country,\n"
+                "    COUNT(DISTINCT i.order_id) AS total_orders,\n"
+                "    SUM(i.quantity_sold) AS total_units_sold,\n"
+                "    ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,\n"
+                "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur\n"
+                "FROM {{ ref('fct_order_items') }} i\n"
+                "JOIN customer_orders co USING (order_id)\n"
+                "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
+                f"WHERE i.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
+                "GROUP BY p.product_id, p.product_name\n"
+                "ORDER BY gross_revenue_eur DESC;"
+            )
+            schema_yaml = (
+                "version: 2\n\n"
+                "models:\n"
+                f"  - name: {model_name}\n"
+                f"    description: 'Governed revenue performance broken down by product SKU for {country_label} ({geo_val}) market.'\n"
+                "    meta:\n"
+                "      owner: 'finance_analytics'\n"
+                "      contains_pii: false\n"
+                "      gdpr_compliant: true\n"
+                "      data_layer: 'gold'\n"
+                "    columns:\n"
+                "      - name: product_id\n"
+                "        data_type: varchar\n"
+                "        tests: [not_null]\n"
+                "      - name: product_name\n"
+                "        data_type: varchar\n"
+                "        tests: [not_null]\n"
+                "      - name: market_country\n"
+                "        data_type: varchar\n"
+                "        tests: [not_null]\n"
+                "      - name: gross_revenue_eur\n"
+                "        data_type: numeric\n"
+                "        tests: [not_null]\n"
+            )
+    elif grain_val == "return_event":
         model_name = "mart_monthly_product_refunds"
         scenario_title = f"Monthly Product Refund Event Log ({start_date} ~ {end_date})"
         target_grain = "Return Event (return_id × product_id)"
