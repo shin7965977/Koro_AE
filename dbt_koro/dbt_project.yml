@@ -23,3 +23,7 @@ models:
     silver:
       +materialized: table
       +schema: silver
+    gold:
+      +materialized: table
+      +schema: gold
+
