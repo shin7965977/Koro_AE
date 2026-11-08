@@ -111,3 +111,35 @@ def test_analytical_spec_contract_and_on_demand_insight_result_shape() -> None:
     assert insight.spec_id == "SPEC-TEST-001"
     assert len(insight.df_snippet) == 2
     assert "5.2%" in insight.executive_takeaway
+
+
+def test_sql_sandbox_executes_synthesized_dbt_jinja_on_koro_dummy_data() -> None:
+    """Verify SQL sandbox automatically compiles dbt Jinja ref() and executes on real Koro domain data."""
+    from koro_adapter import KoroAdapter
+
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
+
+    query = """
+    SELECT
+        p.category_name,
+        COUNT(DISTINCT i.order_id) AS total_orders,
+        SUM(i.quantity_sold) AS total_units_sold,
+        ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,
+        ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur,
+        ROUND(SUM(i.cogs_eur), 2) AS total_cogs_eur
+    FROM {{ ref('fct_order_items') }} i
+    JOIN {{ ref('dim_products') }} p USING (product_id)
+    WHERE i.order_date BETWEEN '2026-10-01' AND '2026-10-31'
+    GROUP BY p.category_name
+    ORDER BY net_revenue_eur DESC;
+    """
+    result_df = adapter.execute_custom_sql(query, data)
+    assert not result_df.empty
+    assert "category_name" in result_df.columns
+    assert "net_revenue_eur" in result_df.columns
+    assert len(result_df) > 0
+
+    # Verify CSV exportable format
+    csv_bytes = result_df.to_csv(index=False).encode("utf-8")
+    assert len(csv_bytes) > 0
