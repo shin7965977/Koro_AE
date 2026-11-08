@@ -478,14 +478,44 @@ def synthesize_dynamic_dbt_model(
     api_key: str = "",
 ) -> SchemaDesignResult:
     """Dynamically compile dbt SQL model, schema contract, and execute physical dry-run."""
+    custom_notes = [v[7:].strip() for v in decisions.values() if isinstance(v, str) and v.startswith("custom:")]
+    custom_str = " ".join(custom_notes).strip()
+
     # 1. Parse Temporal Decision
     temporal_val = decisions.get("temporal", "2026-08-03:2026-10-31")
-    if ":" in temporal_val:
+    if temporal_val.startswith("custom:"):
+        cust = temporal_val[7:].lower()
+        if any(w in cust for w in ["9月", "九月", "2026-09", "september"]):
+            start_date, end_date = "2026-09-01", "2026-09-30"
+        elif any(w in cust for w in ["8月", "八月", "2026-08", "august"]):
+            start_date, end_date = "2026-08-03", "2026-08-31"
+        elif any(w in cust for w in ["10月", "十月", "2026-10", "october"]):
+            start_date, end_date = "2026-10-01", "2026-10-31"
+        else:
+            iso_dates = re.findall(r"\d{4}-\d{2}-\d{2}", cust)
+            if len(iso_dates) >= 2:
+                start_date, end_date = iso_dates[0], iso_dates[1]
+            elif len(iso_dates) == 1:
+                start_date, end_date = iso_dates[0], "2026-10-31"
+            else:
+                start_date, end_date = "2026-10-01", "2026-10-31"
+    elif ":" in temporal_val:
         start_date, end_date = temporal_val.split(":", 1)
     else:
         start_date, end_date = "2026-08-03", "2026-10-31"
 
     geo_val = decisions.get("geographic")
+    if geo_val and geo_val.startswith("custom:"):
+        cust_geo = geo_val[7:].lower()
+        if any(w in cust_geo for w in ["德", "de", "german"]):
+            geo_val = "DE"
+        elif any(w in cust_geo for w in ["奧", "at", "austria"]):
+            geo_val = "AT"
+        elif any(w in cust_geo for w in ["法", "fr", "france"]):
+            geo_val = "FR"
+        else:
+            geo_val = "ALL_EU"
+
     grain_val = decisions.get("grain", "monthly_revenue" if geo_val else "return_event")
 
     # 2. Dynamic Model Synthesis by Geographic Market or Grain
@@ -883,7 +913,7 @@ def synthesize_dynamic_dbt_model(
         {
             "step": "Socratic Clarification",
             "status": "COMPLETED",
-            "detail": f"Anchored: {start_date} ~ {end_date} | Grain: {target_grain}",
+            "detail": f"Anchored: {start_date} ~ {end_date} | Grain: {target_grain}" + (f" | 自訂補充: '{custom_str}'" if custom_str else ""),
         },
         {
             "step": "Schema Reflection",

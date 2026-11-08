@@ -54,7 +54,7 @@ class KoroAdapter(BaseCockpitAdapter):
 
     @property
     def default_language(self) -> str:
-        return "en"
+        return "zh"
 
     @property
     def supports_spec_guidance(self) -> bool:

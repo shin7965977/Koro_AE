@@ -259,3 +259,20 @@ def test_dynamic_dbt_synthesis_german_market_revenue() -> None:
     assert "gross_revenue_eur" in result.data_preview.columns
     assert (result.data_preview["market_country"] == "DE").all()
     assert "mart_de_market_revenue" in result.dbt_sql
+
+
+def test_dynamic_dbt_synthesis_with_custom_fill_in() -> None:
+    """Verify user can fill in custom criteria to override decisions and dynamically synthesize dbt model."""
+    decisions = {
+        "temporal": "custom:請鎖定2026年9月份促銷數據",
+        "geographic": "custom:我想看奧地利市場 (AT)",
+    }
+    result = synthesize_dynamic_dbt_model("我想看促銷數據", decisions)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert "mart_at_market_revenue" in result.dbt_sql
+    assert "2026-09-01" in result.dbt_sql
+    assert "2026-09-30" in result.dbt_sql
+    assert len(result.data_preview) > 0
+    assert (result.data_preview["market_country"] == "AT").all()
+    assert any("自訂補充" in trace["detail"] for trace in result.audit_trace)
