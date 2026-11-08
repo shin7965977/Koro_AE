@@ -337,13 +337,15 @@ def analyze_socratic_inquiry(
 
     watermark = get_lakehouse_watermark(reflection)
     streamlit_secret_key = ""
+    streamlit_session_key = ""
     try:
         import streamlit as st
+        streamlit_session_key = (st.session_state.get("user_gemini_key") or st.session_state.get("gemini_api_key") or "").strip()
         streamlit_secret_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
     except Exception:
-        streamlit_secret_key = ""
+        pass
 
-    effective_key = (api_key or os.getenv("GEMINI_API_KEY", "") or streamlit_secret_key).strip()
+    effective_key = (api_key or streamlit_session_key or os.getenv("GEMINI_API_KEY", "") or streamlit_secret_key).strip()
     is_pytest = bool(os.getenv("PYTEST_CURRENT_TEST"))
 
     if effective_key:
