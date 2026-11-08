@@ -407,12 +407,22 @@ class KoroAdapter(BaseCockpitAdapter):
             from ingestion.seed_bronze import seed_bronze_parquet_files
             import subprocess
             seed_bronze_parquet_files(os.path.join(_ROOT_DIR, "data", "bronze"))
+            dbt_dir = os.path.join(_ROOT_DIR, "dbt_koro")
             subprocess.run(
-                [sys.executable, "-m", "dbt.cli.main", "run"],
-                cwd=os.path.join(_ROOT_DIR, "dbt_koro"),
+                [
+                    sys.executable,
+                    "-m",
+                    "dbt.cli.main",
+                    "run",
+                    "--project-dir",
+                    dbt_dir,
+                    "--profiles-dir",
+                    dbt_dir,
+                ],
+                cwd=dbt_dir,
                 check=True,
-                capture_output=True,
             )
+
 
         con = duckdb.connect(db_path, read_only=True)
         try:

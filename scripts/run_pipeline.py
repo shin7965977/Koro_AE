@@ -67,7 +67,16 @@ def main() -> None:
     if not args.test_only:
         print("\n[Phase 2/4] Running dbt Transformations into DuckDB...")
         run_cmd(
-            [sys.executable, "-m", "dbt.cli.main", "run"],
+            [
+                sys.executable,
+                "-m",
+                "dbt.cli.main",
+                "run",
+                "--project-dir",
+                str(dbt_dir),
+                "--profiles-dir",
+                str(dbt_dir),
+            ],
             cwd=dbt_dir,
             stage_name="dbt Transformation (Bronze & Silver)",
         )
@@ -77,10 +86,20 @@ def main() -> None:
     # 3. Quality & Data Contracts Phase: dbt test
     print("\n[Phase 3/4] Running dbt Data Contract Tests & Schema Validations...")
     run_cmd(
-        [sys.executable, "-m", "dbt.cli.main", "test"],
+        [
+            sys.executable,
+            "-m",
+            "dbt.cli.main",
+            "test",
+            "--project-dir",
+            str(dbt_dir),
+            "--profiles-dir",
+            str(dbt_dir),
+        ],
         cwd=dbt_dir,
         stage_name="dbt Data Quality (Uniqueness, Not-Null, Referential Integrity)",
     )
+
 
     # 4. Warehouse Verification Phase: DuckDB Query Inspection
     print("\n[Phase 4/4] Verifying Lakehouse Warehouse State in DuckDB...")

@@ -26,6 +26,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run E2E Data Pipeline (Bronze Ingestion & dbt duckdb Transformation)
+        run: |
+          python scripts/run_pipeline.py
+
       - name: Run Unit, Integration & AI Benchmark Regression Tests
         run: |
           pytest -v
