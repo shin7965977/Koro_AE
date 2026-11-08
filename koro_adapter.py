@@ -77,6 +77,13 @@ class KoroAdapter(BaseCockpitAdapter):
         return True
 
     @property
+    def data_center_portal_url(self) -> str:
+        return os.getenv(
+            "DATA_CENTER_PORTAL_URL",
+            "https://storage.googleapis.com/de-consulting-508822_cloudbuild/technical/en/portal.html",
+        )
+
+    @property
     def looker_embed_url(self) -> str:
         return os.getenv("LOOKER_EMBED_URL", "")
 
