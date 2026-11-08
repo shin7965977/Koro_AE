@@ -90,3 +90,76 @@ def test_out_of_domain_inquiry_halted_by_socratic_guardrail() -> None:
     assert session.is_out_of_domain is True
     assert session.needs_clarification is False
     assert "超出湖倉分析範疇" in session.rejection_reason
+
+
+def test_sales_and_revenue_inquiry_accepted_and_synthesized() -> None:
+    """Verify '我想知道10月的整體營業額' is recognized within domain and synthesizes physical revenue model."""
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
+    reflection = DatabaseReflectionService(data)
+
+    session = analyze_socratic_inquiry("我想知道10月的整體營業額", reflection=reflection)
+    assert session.is_out_of_domain is False
+
+    decisions = {
+        "temporal": "2026-10-01:2026-10-31",
+        "grain": "monthly_revenue",
+    }
+    result = synthesize_dynamic_dbt_model("我想知道10月的整體營業額", decisions, reflection)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert len(result.data_preview) > 0
+    assert "gross_revenue_eur" in result.data_preview.columns
+    assert "net_revenue_eur" in result.data_preview.columns
+
+
+def test_gemini_genai_socratic_call_with_mock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify _call_gemini_socratic interacts properly with Google GenAI SDK when api_key is present."""
+    import sys
+    import types
+    import json
+
+    class MockModelResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+    class MockModels:
+        def generate_content(self, model: str, contents: str, config: Any = None):
+            fake_payload = {
+                "is_out_of_domain": False,
+                "rejection_reason": "",
+                "needs_clarification": True,
+                "questions": [
+                    {
+                        "question_id": "temporal_test",
+                        "dimension_type": "temporal",
+                        "title": "時間意圖解析 (LLM 生成)",
+                        "explanation": "Gemini 檢測到您提及 10 月份。",
+                        "options": [
+                            {"id": "oct", "label": "2026 年 10 月", "value": "2026-10-01:2026-10-31"}
+                        ]
+                    }
+                ],
+                "locked_decisions": {"grain": "monthly_revenue"}
+            }
+            return MockModelResponse(json.dumps(fake_payload))
+
+    class MockClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.models = MockModels()
+
+    fake_genai = types.ModuleType("google.genai")
+    fake_genai.Client = MockClient  # type: ignore
+    fake_types = types.ModuleType("google.genai.types")
+    fake_types.GenerateContentConfig = lambda **kwargs: kwargs  # type: ignore
+    fake_genai.types = fake_types  # type: ignore
+
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    session = analyze_socratic_inquiry("我想知道10月的整體營業額", api_key="AIzaSyTestMockKey12345")
+    assert session.is_out_of_domain is False
+    assert session.needs_clarification is True
+    assert len(session.questions) == 1
+    assert session.questions[0].title == "時間意圖解析 (LLM 生成)"

@@ -143,7 +143,7 @@ def classify_schema_intent(user_goal: str) -> tuple[str | None, str]:
     # Domain 1: Return Diagnosis (packaging defect, returns, refunds)
     return_keywords = [
         "return", "refund", "defect", "damage", "packaging", "1kg", "bulk", "broken",
-        "退貨", "退款", "破損", "包裝", "規格", "瑕疵",
+        "退貨", "退款", "破損", "包裝", "規格", "瑕疵", "退款紀錄", "退貨紀錄",
     ]
     if any(k in cleaned for k in return_keywords):
         return "bulk_returns", "SKU Bulk Packaging Return Diagnosis"
@@ -151,13 +151,15 @@ def classify_schema_intent(user_goal: str) -> tuple[str | None, str]:
     # Domain 2: Margin & Profit Dilution (category margin, discounts, voucher)
     margin_keywords = [
         "margin", "profit", "voucher", "discount", "dilution", "cogs",
-        "毛利", "利潤", "折價券", "折扣", "稀釋", "成本",
+        "毛利", "利潤", "折價券", "折扣", "稀釋", "成本", "淨利率",
     ]
     if any(k in cleaned for k in margin_keywords):
         return "category_margin", "Category Profit Margin & Voucher Dilution"
 
     # Domain 3: General sales / orders analytical criteria
-    sales_keywords = ["revenue", "order", "sales", "營收", "銷售", "訂單", "業績", "gross", "net"]
+    sales_keywords = [
+        "revenue", "order", "sales", "營收", "銷售", "訂單", "業績", "營業額", "營業", "金額", "gross", "net"
+    ]
     if any(k in cleaned for k in sales_keywords):
         return "category_margin", "Category Profit Margin & Voucher Dilution"
 
