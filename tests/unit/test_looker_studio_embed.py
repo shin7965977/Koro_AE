@@ -25,7 +25,7 @@ def test_step_6_embeds_real_looker_studio_and_eliminates_plotly() -> None:
 
 
 def test_adapter_supports_looker_and_ae_workflow() -> None:
-    """Verify that KoroAdapter has looker and workflow flags enabled for tab selection."""
+    """Verify that KoroAdapter has looker enabled and workflow cleanly disabled."""
     adapter = KoroAdapter()
-    assert adapter.supports_ae_workflow is True
+    assert adapter.supports_ae_workflow is False
     assert adapter.supports_looker is True
