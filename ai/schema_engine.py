@@ -140,6 +140,18 @@ def classify_schema_intent(user_goal: str) -> tuple[str | None, str]:
 
     cleaned = user_goal.strip().lower()
 
+    # Negative catalog / entity boundary checks (Zero-Facade Standard)
+    unsupported_entities = [
+        "taiwan", "台灣", "taiwanese", "台",
+        "weather", "天氣", "climate",
+        "stock", "股價", "crypto", "比特幣",
+        "president", "總統", "誰是", "who is",
+        "poem", "詩", "joke", "笑話",
+        "iphone", "apple", "tesla", "car", "車",
+    ]
+    if any(ue in cleaned for ue in unsupported_entities):
+        return None, "Out-of-Domain: Request references entities or concepts outside KoRo Lakehouse catalog."
+
     # Domain 1: Return Diagnosis (packaging defect, returns, refunds)
     return_keywords = [
         "return", "refund", "defect", "damage", "packaging", "1kg", "bulk", "broken",

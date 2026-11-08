@@ -163,3 +163,69 @@ def test_gemini_genai_socratic_call_with_mock(monkeypatch: pytest.MonkeyPatch) -
     assert session.needs_clarification is True
     assert len(session.questions) == 1
     assert session.questions[0].title == "時間意圖解析 (LLM 生成)"
+
+
+def test_taiwanese_product_revenue_inquiry_strictly_rejected() -> None:
+    """Verify 'I would like to know the taiwanese product's revenue' is rejected and never compiles revenue mart."""
+    session = analyze_socratic_inquiry("I would like to know the taiwanese product's revenue")
+    assert session.is_out_of_domain is True
+    assert session.needs_clarification is False
+    assert "超出湖倉分析範疇" in session.rejection_reason or "無台灣產品" in session.rejection_reason
+
+
+def test_missing_api_key_in_runtime_strictly_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that in live runtime without GEMINI_API_KEY, queries are immediately rejected."""
+    import os
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+
+    session = analyze_socratic_inquiry("I would like to know the taiwanese product's revenue", api_key="")
+    assert session.is_out_of_domain is True
+    assert session.is_api_key_missing is True
+    assert "未檢測到 Gemini API Key" in session.rejection_reason
+
+
+def test_gemini_rejects_taiwanese_products_via_llm_mock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify Gemini evaluates out-of-catalog entities and returns honest domain rejection."""
+    import sys
+    import types
+    import json
+    from typing import Any
+
+    class MockModelResponse:
+        def __init__(self, text: str):
+            self.text = text
+
+    class MockModels:
+        def generate_content(self, model: str, contents: str, config: Any = None):
+            fake_payload = {
+                "is_out_of_domain": True,
+                "rejection_reason": "KoRo 湖倉現有型錄僅包含 12 款歐洲堅果、果乾、點心與料理粉類 SKU，且 dim_products 不含產地 (origin_country) 或台灣產品資料。為了遵守 Zero-Facade 規範，系統拒絕合成不存在的指標模型。",
+                "needs_clarification": False,
+                "questions": [],
+                "locked_decisions": {}
+            }
+            return MockModelResponse(json.dumps(fake_payload))
+
+    class MockClient:
+        def __init__(self, api_key: str):
+            self.api_key = api_key
+            self.models = MockModels()
+
+    fake_genai = types.ModuleType("google.genai")
+    fake_genai.Client = MockClient  # type: ignore
+    fake_types = types.ModuleType("google.genai.types")
+    fake_types.GenerateContentConfig = lambda **kwargs: kwargs  # type: ignore
+    fake_genai.types = fake_types  # type: ignore
+
+    monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+    session = analyze_socratic_inquiry(
+        "I would like to know the taiwanese product's revenue",
+        api_key="AIzaSyTestMockKey12345"
+    )
+    assert session.is_out_of_domain is True
+    assert session.needs_clarification is False
+    assert "12 款歐洲堅果" in session.rejection_reason
+    assert "dim_products 不含產地" in session.rejection_reason
