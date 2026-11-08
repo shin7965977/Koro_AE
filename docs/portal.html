@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DataOps Unified Portal | KoRo Enterprise Lakehouse</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root {
+      --bg-dark: #090d16;
+      --card-bg: rgba(17, 24, 39, 0.75);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --card-hover-border: rgba(99, 102, 241, 0.4);
+      --primary: #6366f1;
+      --primary-light: #818cf8;
+      --emerald: #10b981;
+      --amber: #f59e0b;
+      --cyan: #06b6d4;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --text-sub: #6b7280;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      background-image: 
+        radial-gradient(at 10% 20%, rgba(99, 102, 241, 0.12) 0px, transparent 50%),
+        radial-gradient(at 90% 80%, rgba(16, 185, 129, 0.08) 0px, transparent 50%),
+        radial-gradient(at 50% 50%, rgba(6, 182, 212, 0.05) 0px, transparent 50%);
+      background-attachment: fixed;
+    }
+
+    /* Top Navigation */
+    header {
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--card-border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      padding: 0.75rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .brand-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--primary), #3b82f6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: #fff;
+    }
+    .brand-text h1 { font-size: 1rem; font-weight: 700; color: #fff; }
+    .brand-text p { font-size: 0.75rem; color: var(--text-sub); }
+
+    .nav-tabs {
+      display: flex;
+      gap: 0.5rem;
+      background: rgba(30, 41, 59, 0.5);
+      padding: 0.25rem;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+    }
+    .nav-tab {
+      padding: 0.4rem 1rem;
+      border-radius: 6px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s;
+    }
+    .nav-tab:hover { color: #fff; background: rgba(255, 255, 255, 0.05); }
+    .nav-tab.active { color: #fff; background: var(--primary); font-weight: 600; }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    .health-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--emerald);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 0.3rem 0.75rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .health-pill::before {
+      content: '';
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--emerald);
+      box-shadow: 0 0 8px var(--emerald);
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      max-width: 1400px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 2.5rem 2rem;
+    }
+
+    /* Hero Banner */
+    .hero-banner {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 2.2rem 2.5rem;
+      margin-bottom: 2rem;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+    .hero-banner h2 { font-size: 1.6rem; font-weight: 800; margin-bottom: 0.75rem; color: #fff; }
+    .hero-banner p { font-size: 0.95rem; line-height: 1.6; color: var(--text-muted); max-width: 950px; margin-bottom: 1.5rem; }
+    .meta-tags { display: flex; flex-wrap: wrap; gap: 0.75rem; font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; }
+    .meta-tag {
+      background: rgba(30, 41, 59, 0.6);
+      border: 1px solid var(--card-border);
+      padding: 0.35rem 0.75rem;
+      border-radius: 6px;
+      color: #cbd5e1;
+    }
+    .meta-tag strong { color: var(--primary-light); }
+
+    /* Dual Cards Grid */
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+      gap: 1.75rem;
+      margin-bottom: 2rem;
+    }
+    .portal-card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 14px;
+      padding: 1.8rem;
+      backdrop-filter: blur(12px);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      transition: all 0.25s ease;
+      position: relative;
+      overflow: hidden;
+    }
+    .portal-card:hover {
+      border-color: var(--card-hover-border);
+      transform: translateY(-2px);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+    }
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 1.25rem;
+    }
+    .card-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.4rem;
+    }
+    .icon-elem { background: rgba(244, 63, 94, 0.15); color: #f43f5e; border: 1px solid rgba(244, 63, 94, 0.3); }
+    .icon-dbt { background: rgba(255, 105, 75, 0.15); color: #ff694b; border: 1px solid rgba(255, 105, 75, 0.3); }
+
+    .category-badge {
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.25rem 0.6rem;
+      border-radius: 6px;
+      background: rgba(99, 102, 241, 0.15);
+      color: var(--primary-light);
+      border: 1px solid rgba(99, 102, 241, 0.3);
+    }
+
+    .card-title { font-size: 1.25rem; font-weight: 700; color: #fff; margin-bottom: 0.5rem; }
+    .card-desc { font-size: 0.88rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 1.25rem; }
+
+    .feature-list { list-style: none; margin-bottom: 1.75rem; font-size: 0.85rem; color: #cbd5e1; display: flex; flex-direction: column; gap: 0.6rem; }
+    .feature-list li { display: flex; align-items: flex-start; gap: 0.6rem; line-height: 1.4; }
+    .feature-list li i { color: var(--emerald); font-size: 0.85rem; margin-top: 0.15rem; }
+
+    .btn-group { display: flex; gap: 0.75rem; }
+    .btn {
+      flex: 1;
+      padding: 0.65rem 1rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-align: center;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.4rem;
+      transition: all 0.2s;
+    }
+    .btn-primary { background: var(--primary); color: #fff; border: 1px solid transparent; }
+    .btn-primary:hover { background: #4f46e5; }
+    .btn-secondary { background: rgba(30, 41, 59, 0.8); color: #e2e8f0; border: 1px solid var(--card-border); }
+    .btn-secondary:hover { background: rgba(51, 65, 85, 0.8); color: #fff; }
+
+    /* Fullscreen Embed View Frame */
+    .embed-view-container {
+      display: none;
+      width: 100%;
+      height: calc(100vh - 65px);
+      border: none;
+    }
+    .embed-view-container.active { display: block; }
+  </style>
+</head>
+<body>
+
+  <!-- Top Header Navigation -->
+  <header>
+    <div class="brand">
+      <div class="brand-icon">K</div>
+      <div class="brand-text">
+        <h1>DataOps Unified Portal</h1>
+        <p>KoRo E-Commerce Cloud Lakehouse Platform</p>
+      </div>
+    </div>
+
+    <div class="nav-tabs">
+      <div class="nav-tab active" onclick="switchNav('hub', this)"><i class="fa-solid fa-table-cells-large"></i> Dashboard Hub Overview</div>
+      <div class="nav-tab" onclick="switchNav('elem', this)"><i class="fa-solid fa-stethoscope"></i> Elementary Quality Monitor</div>
+      <div class="nav-tab" onclick="switchNav('dbt', this)"><i class="fa-solid fa-book-bookmark"></i> dbt Catalog & Lineage</div>
+    </div>
+
+    <div class="header-right">
+      <div class="health-pill">Pipeline Healthy</div>
+      <a href="https://shin7965977.github.io/Koro_AE/" style="color:#94a3b8; font-size:12px; text-decoration:none;"><i class="fa-solid fa-house"></i> Home</a>
+    </div>
+  </header>
+
+  <!-- View 1: Hub Overview -->
+  <main id="view-hub">
+    <!-- Hero Banner -->
+    <div class="hero-banner">
+      <h2>Enterprise Dual-Engine DataOps Control Center</h2>
+      <p>
+        Combining <strong>Elementary Data</strong> (real-time test telemetry, anomaly detection, schema tracking) with <strong>dbt Docs</strong> 
+        (commercial data catalog, column dictionary, interactive end-to-end lineage), achieving a 100% Serverless Zero-Ops architecture on Google Cloud & Kimball Star Schema.
+      </p>
+      <div class="meta-tags">
+        <span class="meta-tag">GCP Project: <strong>koro-analytics-poc</strong></span>
+        <span class="meta-tag">Hosting: <strong>GitHub Pages (Zero-Ops)</strong></span>
+        <span class="meta-tag">Warehouse: <strong>Google BigQuery</strong></span>
+        <span class="meta-tag">Architecture: <strong>Ralph Kimball Star Schema</strong></span>
+      </div>
+    </div>
+
+    <!-- Cards Grid -->
+    <div class="cards-grid">
+      <!-- Card 1: Elementary -->
+      <div class="portal-card">
+        <div>
+          <div class="card-top">
+            <div class="card-icon icon-elem"><i class="fa-solid fa-stethoscope"></i></div>
+            <span class="category-badge">Data Observability</span>
+          </div>
+          <h3 class="card-title">Elementary Data Quality & Anomaly Detection</h3>
+          <p class="card-desc">
+            Pipeline quality gatekeeper built for Analytics Engineers, capturing test failures, metric anomalies, and schema drifts during dbt executions.
+          </p>
+          <ul class="feature-list">
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Real-time Test Tracking:</strong> Captures Unique, Not Null, and Referential Integrity violations</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Statistical Anomaly Detection:</strong> Monitors volume anomalies and freshness delays</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Execution Time Profiling:</strong> Analyzes BigQuery runtime for models and tests</li>
+          </ul>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="openEmbedded('elem')">Open Embedded View</button>
+          <a class="btn btn-secondary" href="elementary_report.html" target="_blank">Open New Tab ↗</a>
+        </div>
+      </div>
+
+      <!-- Card 2: dbt Docs -->
+      <div class="portal-card">
+        <div>
+          <div class="card-top">
+            <div class="card-icon icon-dbt"><i class="fa-solid fa-book"></i></div>
+            <span class="category-badge">Data Catalog & Lineage</span>
+          </div>
+          <h3 class="card-title">dbt Enterprise Data Catalog & End-to-End Lineage</h3>
+          <p class="card-desc">
+            Official native data dictionary and lineage hub, exposing 40+ models and column definitions across Silver clean layers and Gold data marts.
+          </p>
+          <ul class="feature-list">
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Comprehensive Data Catalog:</strong> Live BigQuery schema types and business metadata descriptions</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Interactive Lineage DAG:</strong> Traceability from Bronze raw ingest to Silver cleaned and Gold marts</li>
+            <li><i class="fa-solid fa-circle-check"></i> <strong>Instant Global Search:</strong> Query models, tags, and column definitions in milliseconds</li>
+          </ul>
+        </div>
+        <div class="btn-group">
+          <button class="btn btn-primary" onclick="openEmbedded('dbt')">Open Embedded View</button>
+          <a class="btn btn-secondary" href="dbt_docs.html" target="_blank">Open New Tab ↗</a>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- View 2: Elementary Embedded Frame -->
+  <iframe id="iframe-elem" class="embed-view-container" src="elementary_report.html"></iframe>
+
+  <!-- View 3: dbt Docs Embedded Frame -->
+  <iframe id="iframe-dbt" class="embed-view-container" src="dbt_docs.html"></iframe>
+
+  <script>
+    function switchNav(viewType, el) {
+      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+      if (el) el.classList.add('active');
+
+      document.getElementById('view-hub').style.display = 'none';
+      document.getElementById('iframe-elem').classList.remove('active');
+      document.getElementById('iframe-dbt').classList.remove('active');
+
+      if (viewType === 'hub') {
+        document.getElementById('view-hub').style.display = 'block';
+      } else if (viewType === 'elem') {
+        document.getElementById('iframe-elem').classList.add('active');
+      } else if (viewType === 'dbt') {
+        document.getElementById('iframe-dbt').classList.add('active');
+      }
+    }
+
+    function openEmbedded(type) {
+      const tabTarget = type === 'elem' ? 1 : 2;
+      const navTabs = document.querySelectorAll('.nav-tab');
+      if (navTabs[tabTarget]) {
+        switchNav(type, navTabs[tabTarget]);
+      }
+    }
+  </script>
+</body>
+</html>

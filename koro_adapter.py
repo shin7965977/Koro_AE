@@ -80,7 +80,7 @@ class KoroAdapter(BaseCockpitAdapter):
     def data_center_portal_url(self) -> str:
         return os.getenv(
             "DATA_CENTER_PORTAL_URL",
-            "https://storage.googleapis.com/de-consulting-508822_cloudbuild/technical/en/portal.html",
+            "https://shin7965977.github.io/Koro_AE/portal.html",
         )
 
     @property
