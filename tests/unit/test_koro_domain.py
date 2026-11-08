@@ -174,18 +174,18 @@ def test_ae_guided_workflow_conversational_trigger() -> None:
 
 
 def test_quick_questions_strictly_two_options() -> None:
-    """Verify that quick diagnosis questions are pruned to strictly 2 options."""
+    """Verify that quick diagnosis questions are pruned to strictly 2 domain options."""
     adapter = KoroAdapter()
     en_q = adapter.quick_diagnosis_questions_en
     zh_q = adapter.quick_diagnosis_questions_zh
 
     assert len(en_q) == 2
-    assert "🚀 Start AE Guided Workflow" in en_q[0]
-    assert "What data and catalog categories are currently available?" in en_q[1]
+    assert "What data and catalog categories" in en_q[0]
+    assert "highest margin dilution" in en_q[1]
 
     assert len(zh_q) == 2
-    assert "🚀 啟動 AE 需求交付全流程" in zh_q[0]
-    assert "目前有哪些數據與品類目錄？" in zh_q[1]
+    assert "目前有哪些數據與品類目錄？" in zh_q[0]
+    assert "毛利稀釋" in zh_q[1]
 
 
 def test_unmatched_query_does_not_dump_catalog_and_handles_api_key() -> None:

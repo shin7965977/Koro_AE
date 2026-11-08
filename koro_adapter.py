@@ -374,15 +374,15 @@ class KoroAdapter(BaseCockpitAdapter):
     @property
     def quick_diagnosis_questions_en(self) -> list[str]:
         return [
-            "🚀 Start AE Guided Workflow",
             "What data and catalog categories are currently available?",
+            "Which product categories show the highest margin dilution after discounts?",
         ]
 
     @property
     def quick_diagnosis_questions_zh(self) -> list[str]:
         return [
-            "🚀 啟動 AE 需求交付全流程",
             "目前有哪些數據與品類目錄？",
+            "哪一個品類在折價促銷後毛利稀釋最嚴重？",
         ]
 
     @property
