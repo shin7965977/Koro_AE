@@ -69,6 +69,14 @@ class KoroAdapter(BaseCockpitAdapter):
         return True
 
     @property
+    def supports_schema_designer(self) -> bool:
+        return True
+
+    @property
+    def supports_data_center(self) -> bool:
+        return True
+
+    @property
     def looker_embed_url(self) -> str:
         return os.getenv("LOOKER_EMBED_URL", "")
 
