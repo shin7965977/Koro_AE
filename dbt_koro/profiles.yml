@@ -1,0 +1,9 @@
+koro_duckdb:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('KORO_DUCKDB_PATH', '../data/koro_lakehouse.duckdb') }}"
+      threads: 4
+
+

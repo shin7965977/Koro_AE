@@ -14,12 +14,20 @@ ENV/
 warehouse/dbt_project/target/
 warehouse/dbt_project/dbt_packages/
 warehouse/dbt_project/logs/
+dbt_koro/target/
+dbt_koro/dbt_packages/
+dbt_koro/logs/
+dbt_koro/.user.yml
+
 
 # Ingestion / Local Data / Logs
 ingestion_logs/
 *.log
+*.duckdb
+*.duckdb.tmp
 data/raw/
 data/processed/
+
 
 # Testing & Evaluation
 .pytest_cache/

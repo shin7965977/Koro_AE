@@ -20,6 +20,7 @@ _ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
 if _ROOT_DIR not in sys.path:
     sys.path.insert(0, _ROOT_DIR)
 
+import duckdb
 from cockpit_core.adapter import (
     AnalyticalSpecContract,
     BaseCockpitAdapter,
@@ -30,7 +31,6 @@ from cockpit_core.adapter import (
 )
 from cockpit_core.components.sql_expander import render_sql_snippet_module
 
-from ingestion.synthetic_medallion import build_koro_medallion_data
 
 
 class KoroAdapter(BaseCockpitAdapter):
@@ -401,7 +401,72 @@ class KoroAdapter(BaseCockpitAdapter):
     def load_domain_data(
         self, start_date: date | None = None, end_date: date | None = None
     ) -> dict[str, pd.DataFrame]:
-        return build_koro_medallion_data(start_date=start_date, end_date=end_date)
+        """Load Bronze raw ingested tables and Silver Kimball Star Schema directly from DuckDB lakehouse."""
+        db_path = os.path.join(_ROOT_DIR, "data", "koro_lakehouse.duckdb")
+        if not os.path.exists(db_path):
+            from ingestion.seed_bronze import seed_bronze_parquet_files
+            import subprocess
+            seed_bronze_parquet_files(os.path.join(_ROOT_DIR, "data", "bronze"))
+            subprocess.run(
+                [sys.executable, "-m", "dbt.cli.main", "run"],
+                cwd=os.path.join(_ROOT_DIR, "dbt_koro"),
+                check=True,
+                capture_output=True,
+            )
+
+        con = duckdb.connect(db_path, read_only=True)
+        try:
+            raw_koro_products = con.execute("SELECT * FROM main_bronze.stg_koro_products").df()
+            raw_shopware_orders = con.execute("SELECT * FROM main_bronze.stg_shopware_orders").df()
+            raw_return_logs = con.execute("SELECT * FROM main_bronze.stg_return_logs").df()
+
+            dim_products = con.execute("SELECT * FROM main_silver.dim_products").df()
+            dim_categories = con.execute("SELECT * FROM main_silver.dim_categories").df()
+            dim_customers = con.execute("SELECT * FROM main_silver.dim_customers").df()
+            fct_orders = con.execute("SELECT * FROM main_silver.fct_orders").df()
+            fct_order_items = con.execute("SELECT * FROM main_silver.fct_order_items").df()
+            fct_returns = con.execute("SELECT * FROM main_silver.fct_returns").df()
+        finally:
+            con.close()
+
+        # Normalize date column objects
+        for df, col in [
+            (fct_orders, "order_date"),
+            (fct_order_items, "order_date"),
+            (fct_returns, "return_date"),
+            (raw_shopware_orders, "order_date"),
+            (raw_return_logs, "return_date"),
+        ]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col]).dt.date
+
+        # Apply date filters if provided
+        if start_date:
+            fct_orders = fct_orders[fct_orders["order_date"] >= start_date].reset_index(drop=True)
+            fct_order_items = fct_order_items[fct_order_items["order_date"] >= start_date].reset_index(drop=True)
+            fct_returns = fct_returns[fct_returns["return_date"] >= start_date].reset_index(drop=True)
+            raw_shopware_orders = raw_shopware_orders[raw_shopware_orders["order_date"] >= start_date].reset_index(drop=True)
+            raw_return_logs = raw_return_logs[raw_return_logs["return_date"] >= start_date].reset_index(drop=True)
+
+        if end_date:
+            fct_orders = fct_orders[fct_orders["order_date"] <= end_date].reset_index(drop=True)
+            fct_order_items = fct_order_items[fct_order_items["order_date"] <= end_date].reset_index(drop=True)
+            fct_returns = fct_returns[fct_returns["return_date"] <= end_date].reset_index(drop=True)
+            raw_shopware_orders = raw_shopware_orders[raw_shopware_orders["order_date"] <= end_date].reset_index(drop=True)
+            raw_return_logs = raw_return_logs[raw_return_logs["return_date"] <= end_date].reset_index(drop=True)
+
+        return {
+            "raw_koro_products": raw_koro_products,
+            "raw_shopware_orders": raw_shopware_orders,
+            "raw_return_logs": raw_return_logs,
+            "dim_products": dim_products,
+            "dim_categories": dim_categories,
+            "dim_customers": dim_customers,
+            "fct_orders": fct_orders,
+            "fct_order_items": fct_order_items,
+            "fct_returns": fct_returns,
+        }
+
 
     @property
     def default_system_prompt_en(self) -> str:

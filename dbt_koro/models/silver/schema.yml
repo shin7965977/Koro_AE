@@ -1,0 +1,69 @@
+version: 2
+
+models:
+  - name: dim_products
+    description: "Kimball conformed product dimension at SKU grain"
+    columns:
+      - name: product_id
+        description: "Primary key for SKU"
+        tests:
+          - unique
+          - not_null
+      - name: product_name
+        tests:
+          - not_null
+
+  - name: dim_categories
+    description: "Category hierarchy dimension"
+    columns:
+      - name: category_name
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_customers
+    description: "Customer segment and geography dimension"
+    columns:
+      - name: customer_id
+        tests:
+          - unique
+          - not_null
+
+  - name: fct_orders
+    description: "Order grain transactional fact"
+    columns:
+      - name: order_id
+        tests:
+          - unique
+          - not_null
+      - name: order_gross_eur
+        tests:
+          - not_null
+
+  - name: fct_order_items
+    description: "Atomic line-item sales fact table"
+    columns:
+      - name: order_item_id
+        tests:
+          - unique
+          - not_null
+      - name: product_id
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_products')
+              field: product_id
+      - name: quantity_sold
+        tests:
+          - not_null
+
+  - name: fct_returns
+    description: "Event grain customer return inspection fact"
+    columns:
+      - name: return_id
+        tests:
+          - unique
+          - not_null
+      - name: refunded_eur
+        tests:
+          - not_null
