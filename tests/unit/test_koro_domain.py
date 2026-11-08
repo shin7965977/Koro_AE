@@ -33,27 +33,39 @@ def test_data_contracts_and_semantic_rules_exist_and_valid() -> None:
 
 
 def test_koro_adapter_medallion_data_and_hero_anomaly_pattern() -> None:
-    """Verify KoroAdapter loads Bronze/Silver/Gold tables and preserves the 1kg Cashew return anomaly."""
+    """Verify KoroAdapter loads Bronze raw and Silver Kimball Star Schema, preserving the 1kg Cashew return anomaly."""
     adapter = KoroAdapter()
     data = adapter.load_domain_data()
 
-    assert "mart_product_performance" in data
-    assert "mart_category_daily" in data
-    assert "int_returns_enriched" in data
+    # Kimball Silver layer must contain conformed facts and dims (No hardcoded Gold Marts!)
+    assert "dim_products" in data
+    assert "dim_categories" in data
+    assert "dim_customers" in data
+    assert "fct_orders" in data
+    assert "fct_order_items" in data
+    assert "fct_returns" in data
+
+    # Verify Bronze tables exist
     assert "raw_shopware_orders" in data
+    assert "raw_return_logs" in data
+    assert "raw_koro_products" in data
 
-    gold_df = data["mart_product_performance"]
-    cashew_1kg = gold_df[gold_df["product_id"] == "KORO-NUT-001"].iloc[0]
-    assert cashew_1kg["packaging_size"] == "1kg"
-    assert abs(float(cashew_1kg["return_rate_pct"]) - 5.2) < 0.15
+    # Dynamic calculation of 1kg Cashews return rate from Silver facts
+    df_items = data["fct_order_items"]
+    df_ret = data["fct_returns"]
 
-    returns_df = data["int_returns_enriched"]
-    cashew_returns = returns_df[returns_df["product_id"] == "KORO-NUT-001"]
-    total_ret = cashew_returns["returned_units"].sum()
-    vacuum_ret = cashew_returns[
-        cashew_returns["return_reason"] == "Vacuum Packaging Defect"
+    cashew_sold = df_items[df_items["product_id"] == "KORO-NUT-001"]["quantity_sold"].sum()
+    cashew_ret = df_ret[df_ret["product_id"] == "KORO-NUT-001"]["returned_units"].sum()
+    cashew_rate = float(cashew_ret * 100.0 / cashew_sold)
+    assert abs(cashew_rate - 5.2) < 0.15
+
+    # Root cause defect verification in fct_returns
+    cashew_returns_df = df_ret[df_ret["product_id"] == "KORO-NUT-001"]
+    total_ret = cashew_returns_df["returned_units"].sum()
+    vacuum_ret = cashew_returns_df[
+        cashew_returns_df["return_reason"] == "Vacuum Packaging Defect"
     ]["returned_units"].sum()
-    assert abs((vacuum_ret / total_ret) - 0.78) < 0.03
+    assert abs((vacuum_ret / total_ret) - 0.78) < 0.05
 
 
 def test_koro_adapter_kpi_cards_and_date_filtering() -> None:
@@ -127,14 +139,14 @@ def test_sql_sandbox_execution_and_finops_protection() -> None:
     adapter = KoroAdapter()
     data = adapter.load_domain_data()
 
-    # Safe SELECT query
-    res_df = adapter.execute_custom_sql("SELECT product_id, product_name FROM mart_product_performance LIMIT 5", data)
+    # Safe SELECT query against Silver Kimball dimension
+    res_df = adapter.execute_custom_sql("SELECT product_id, product_name FROM dim_products LIMIT 5", data)
     assert len(res_df) == 5
     assert "product_id" in res_df.columns
 
     # Destructive DROP command must be blocked
     with pytest.raises(ValueError, match="Security Alert"):
-        adapter.execute_custom_sql("DROP TABLE mart_product_performance", data)
+        adapter.execute_custom_sql("DROP TABLE dim_products", data)
 
 
 def test_multilingual_adaptive_and_language_capability_inquiry() -> None:

@@ -13,6 +13,7 @@ import sys
 from datetime import date
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 
@@ -555,9 +556,41 @@ def compile_analytical_spec(
     project_id: str = "koro-analytics-poc",
     is_en: bool = True,
 ) -> OnDemandInsightResult:
-    """Compile a confirmed AnalyticalSpecContract into an OnDemandInsightResult strictly respecting Date Range."""
-    gold_df = data_dict.get("mart_product_performance", pd.DataFrame())
-    returns_df = data_dict.get("int_returns_enriched", pd.DataFrame())
+    """Compile a confirmed AnalyticalSpecContract into an OnDemandInsightResult from Silver Kimball Star Schema."""
+    df_items = data_dict.get("fct_order_items", pd.DataFrame())
+    df_prod = data_dict.get("dim_products", pd.DataFrame())
+    returns_df = data_dict.get("fct_returns", pd.DataFrame())
+
+    # Dynamically compile product performance mart from Silver fact & dim
+    if not df_items.empty and not df_prod.empty:
+        agg_items = df_items.groupby("product_id", as_index=False).agg(
+            sold_units=("quantity_sold", "sum"),
+            gross_revenue_eur=("line_gross_eur", "sum"),
+            discount_eur=("line_discount_eur", "sum"),
+            refunded_eur=("line_refund_eur", "sum"),
+            net_revenue_eur=("line_net_eur", "sum"),
+            cogs_eur=("cogs_eur", "sum"),
+        )
+        agg_ret = returns_df.groupby("product_id", as_index=False).agg(
+            returned_units=("returned_units", "sum")
+        ) if not returns_df.empty else pd.DataFrame(columns=["product_id", "returned_units"])
+        gold_df = pd.merge(df_prod, agg_items, on="product_id", how="left")
+        gold_df = pd.merge(gold_df, agg_ret, on="product_id", how="left")
+        gold_df["returned_units"] = gold_df["returned_units"].fillna(0).astype(int)
+        gold_df["sold_units"] = gold_df["sold_units"].fillna(0).astype(int)
+        gold_df["return_rate_pct"] = (
+            gold_df["returned_units"] * 100.0 / gold_df["sold_units"].replace(0, np.nan)
+        ).round(2).fillna(0.0)
+        gold_df["net_margin_eur"] = (gold_df["net_revenue_eur"] - gold_df["cogs_eur"]).round(2)
+        gold_df["net_margin_pct"] = (
+            gold_df["net_margin_eur"] * 100.0 / gold_df["net_revenue_eur"].replace(0, np.nan)
+        ).round(2).fillna(0.0)
+        gold_df["days_of_supply"] = (
+            gold_df["stock_on_hand"]
+            / (gold_df["sold_units"] / 90.0).replace(0, np.nan)
+        ).round(1).fillna(0.0)
+    else:
+        gold_df = pd.DataFrame()
 
     start_str = start_date.isoformat() if start_date else "2026-08-03"
     end_str = end_date.isoformat() if end_date else "2026-10-31"

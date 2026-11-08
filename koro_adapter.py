@@ -1,7 +1,8 @@
 """KoRo Domain Adapter for Lakehouse Cockpit Core.
 
-Connects KoRo's Medallion datasets, semantic metric contracts, Looker LookML,
-and Conversational Analytics Copilot to the generic Lakehouse Cockpit microkernel.
+Connects KoRo's Medallion datasets conforming to Ralph Kimball Dimensional Modeling,
+semantic metric contracts, Looker LookML, and Conversational Analytics Copilot
+to the generic Lakehouse Cockpit microkernel.
 """
 
 from __future__ import annotations
@@ -49,7 +50,7 @@ class KoroAdapter(BaseCockpitAdapter):
 
     @property
     def brand_badge_text(self) -> str:
-        return "Medallion Lakehouse · Semantic Guarded"
+        return "Medallion Lakehouse · Kimball Dimensional Model"
 
     @property
     def default_language(self) -> str:
@@ -58,6 +59,10 @@ class KoroAdapter(BaseCockpitAdapter):
     @property
     def supports_spec_guidance(self) -> bool:
         return True
+
+    @property
+    def supports_ae_workflow(self) -> bool:
+        return False
 
     @property
     def supports_looker(self) -> bool:
@@ -78,9 +83,18 @@ class KoroAdapter(BaseCockpitAdapter):
     @property
     def default_sandbox_sql(self) -> str:
         return (
-            "-- Audit KoRo Product Return Rates & Defect Causes\n"
-            "SELECT product_id, product_name, packaging_size, sold_units, returned_units, return_rate_pct\n"
-            "FROM mart_product_performance\n"
+            "-- Query Silver Star Schema: High-return products by joining fct_order_items, fct_returns, and dim_products\n"
+            "SELECT \n"
+            "    p.product_id, \n"
+            "    p.product_name, \n"
+            "    p.packaging_size,\n"
+            "    SUM(i.quantity_sold) AS units_sold,\n"
+            "    COALESCE(SUM(r.returned_units), 0) AS units_returned,\n"
+            "    ROUND(COALESCE(SUM(r.returned_units), 0) * 100.0 / NULLIF(SUM(i.quantity_sold), 0), 2) AS return_rate_pct\n"
+            "FROM dim_products p\n"
+            "JOIN fct_order_items i USING (product_id)\n"
+            "LEFT JOIN fct_returns r USING (product_id)\n"
+            "GROUP BY p.product_id, p.product_name, p.packaging_size\n"
             "ORDER BY return_rate_pct DESC\n"
             "LIMIT 10;"
         )
@@ -88,8 +102,8 @@ class KoroAdapter(BaseCockpitAdapter):
     @property
     def kpi_cards(self) -> list[KPICardSpec]:
         def calc_gross(data: dict[str, pd.DataFrame]) -> dict[str, Any]:
-            df = data.get("mart_product_performance", pd.DataFrame())
-            val = float(df["gross_revenue_eur"].sum()) if not df.empty else 0.0
+            df = data.get("fct_order_items", pd.DataFrame())
+            val = float(df["line_gross_eur"].sum()) if not df.empty else 0.0
             return {
                 "value": f"€{val:,.0f}",
                 "status": "normal" if val >= 300000 else "warning",
@@ -97,8 +111,8 @@ class KoroAdapter(BaseCockpitAdapter):
             }
 
         def calc_net(data: dict[str, pd.DataFrame]) -> dict[str, Any]:
-            df = data.get("mart_product_performance", pd.DataFrame())
-            val = float(df["net_revenue_eur"].sum()) if not df.empty else 0.0
+            df = data.get("fct_order_items", pd.DataFrame())
+            val = float(df["line_net_eur"].sum()) if not df.empty else 0.0
             return {
                 "value": f"€{val:,.0f}",
                 "status": "normal" if val >= 280000 else "warning",
@@ -106,21 +120,24 @@ class KoroAdapter(BaseCockpitAdapter):
             }
 
         def calc_aov(data: dict[str, pd.DataFrame]) -> dict[str, Any]:
-            df_ord = data.get("raw_shopware_orders", pd.DataFrame())
+            df_ord = data.get("fct_orders", pd.DataFrame())
             if df_ord.empty:
                 return {"value": "€0.00", "status": "warning", "caption": "No orders"}
-            val = float(df_ord["order_net_eur"].sum()) / max(1, len(df_ord))
+            val = float(df_ord["total_net_eur"].sum()) / max(1, len(df_ord))
             return {
                 "value": f"€{val:,.2f}",
                 "status": "normal" if val >= 55.0 else "warning",
-                "caption": f"Across {len(df_ord):,} Shopware orders",
+                "caption": f"Across {len(df_ord):,} completed orders",
             }
 
         def calc_return_rate(data: dict[str, pd.DataFrame]) -> dict[str, Any]:
-            df = data.get("mart_product_performance", pd.DataFrame())
-            if df.empty or df["sold_units"].sum() == 0:
+            df_items = data.get("fct_order_items", pd.DataFrame())
+            df_ret = data.get("fct_returns", pd.DataFrame())
+            total_sold = df_items["quantity_sold"].sum() if not df_items.empty else 0
+            total_ret = df_ret["returned_units"].sum() if not df_ret.empty else 0
+            if total_sold == 0:
                 return {"value": "0.00%", "status": "normal", "caption": "No sales"}
-            rate = float(df["returned_units"].sum() * 100.0 / df["sold_units"].sum())
+            rate = float(total_ret * 100.0 / total_sold)
             return {
                 "value": f"{rate:.2f}%",
                 "status": "normal" if rate <= 2.50 else "warning",
@@ -132,63 +149,63 @@ class KoroAdapter(BaseCockpitAdapter):
                 key="gross_revenue",
                 title_en="Gross Revenue",
                 title_zh="營業總額 (Gross Revenue)",
-                metric_formula="gross_sales / orders_count",
+                metric_formula="SUM(fct_order_items.line_gross_eur)",
                 target_rule=">= €300,000 / period",
                 calculate=calc_gross,
                 accent_color="#6366f1",
                 formula_numerator=MetricComponent(
-                    label="gross_sales",
+                    label="line_gross_eur",
                     role="Numerator",
-                    description="Total product sales before vouchers, discounts and refunds.",
-                    description_zh="未扣除折扣與退款前的商品銷售總額。",
+                    description="Total item line purchase price before vouchers and refunds.",
+                    description_zh="未扣除折扣與退款前的商品明細銷售總額。",
                 ),
                 formula_denominator=MetricComponent(
-                    label="order_lines",
+                    label="None",
                     role="Denominator",
-                    description="Total completed line item purchases recorded in Shopware 6.",
-                    description_zh="Shopware 6 中記錄的總完成購買明細筆數。",
+                    description="Absolute monetary volume aggregation.",
+                    description_zh="貨幣總量聚合指標。",
                 ),
             ),
             KPICardSpec(
                 key="net_revenue",
                 title_en="Net Revenue",
                 title_zh="實質淨營收 (Net Revenue)",
-                metric_formula="net_sales / period_days",
+                metric_formula="SUM(fct_order_items.line_net_eur)",
                 target_rule=">= €280,000 / period",
                 calculate=calc_net,
                 accent_color="#10b981",
                 formula_numerator=MetricComponent(
-                    label="net_sales",
+                    label="line_net_eur",
                     role="Numerator",
-                    description="Realized revenue after subtracting promotional vouchers and refunded returns.",
-                    description_zh="扣除促銷折價券與退貨退款後的實質入帳淨營收（財務與行銷統一對齊口徑）。",
+                    description="Realized revenue after subtracting promotional vouchers and customer refunds.",
+                    description_zh="扣除折價券與顧客退款後之真實入帳淨營業額。",
                 ),
                 formula_denominator=MetricComponent(
-                    label="period_days",
+                    label="None",
                     role="Denominator",
-                    description="Standard accounting reporting timeframe in calendar days.",
-                    description_zh="日曆天數標準會計報表統計期間。",
+                    description="Absolute monetary volume aggregation.",
+                    description_zh="貨幣總量聚合指標。",
                 ),
             ),
             KPICardSpec(
                 key="aov",
-                title_en="Avg Order Value (AOV)",
+                title_en="Average Order Value (AOV)",
                 title_zh="平均客單價 (AOV)",
-                metric_formula="net_order_val / orders_count",
-                target_rule=">= €55.00",
+                metric_formula="total_net_eur / total_orders",
+                target_rule=">= €55.00 / order",
                 calculate=calc_aov,
                 accent_color="#3b82f6",
                 formula_numerator=MetricComponent(
-                    label="net_order_val",
+                    label="total_net_eur",
                     role="Numerator",
-                    description="Cumulative net order value from valid completed cart checkouts.",
-                    description_zh="有效完成結帳購物車之累積淨訂單金額。",
+                    description="Total net realized revenue across all orders in fct_orders.",
+                    description_zh="fct_orders 中全數訂單之淨營收加總。",
                 ),
                 formula_denominator=MetricComponent(
-                    label="orders_count",
+                    label="order_id_count",
                     role="Denominator",
-                    description="Total count of distinct valid customer orders.",
-                    description_zh="獨立有效顧客訂單總筆數。",
+                    description="Total count of distinct valid customer orders in fct_orders.",
+                    description_zh="fct_orders 中獨立有效顧客訂單總筆數。",
                 ),
             ),
             KPICardSpec(
@@ -202,98 +219,111 @@ class KoroAdapter(BaseCockpitAdapter):
                 formula_numerator=MetricComponent(
                     label="returned_units",
                     role="Numerator",
-                    description="Count of items returned by customers due to packaging defect or claim.",
-                    description_zh="顧客因包裝破損或瑕疵申訴而退回之商品件數。",
+                    description="Count of items returned in fct_returns due to defect or complaint.",
+                    description_zh="fct_returns 中因瑕疵或客訴而退回之商品總件數。",
                 ),
                 formula_denominator=MetricComponent(
-                    label="sold_units",
+                    label="quantity_sold",
                     role="Denominator",
-                    description="Total quantity of product units shipped and delivered to customers.",
-                    description_zh="成功發貨送達顧客之商品總售出件數。",
+                    description="Total quantity of product units sold recorded in fct_order_items.",
+                    description_zh="fct_order_items 中記錄之商品總銷售件數。",
                 ),
             ),
         ]
 
     @property
     def medallion_layers(self) -> dict[str, Any]:
-        def render_gold_product_mart(
+        def render_gold_dynamic_mart(
             data_dict: dict[str, pd.DataFrame],
             is_en: bool,
             adapter: Any,
             start_date: date | None = None,
             end_date: date | None = None,
         ) -> None:
-            df = data_dict.get("mart_product_performance", pd.DataFrame())
+            # Dynamically compute Gold Mart view from Silver facts & dimensions on the fly
+            df_items = data_dict.get("fct_order_items", pd.DataFrame())
+            df_prod = data_dict.get("dim_products", pd.DataFrame())
             st.caption(
-                "⚖️ **Data Disclaimer**: Public KoRo catalog structure paired with synthetic transactional metrics."
+                "⚖️ **Kimball Gold Mart**: Dynamically aggregated from Silver `fct_order_items` & `dim_products`."
             )
-            if not df.empty:
+            if not df_items.empty and not df_prod.empty:
+                merged = df_items.groupby("product_id", as_index=False).agg(
+                    total_sold_units=("quantity_sold", "sum"),
+                    net_revenue_eur=("line_net_eur", "sum"),
+                )
+                gold_df = pd.merge(df_prod, merged, on="product_id", how="left")
                 fig = px.bar(
-                    df.sort_values("net_revenue_eur", ascending=True),
+                    gold_df.sort_values("net_revenue_eur", ascending=True),
                     x="net_revenue_eur",
                     y="product_name",
                     color="category_name",
                     orientation="h",
-                    title="Gold Mart: Net Revenue by SKU & Category (EUR)",
+                    title="Gold Mart Dynamic View: Net Revenue by SKU & Category (EUR)",
                     labels={"net_revenue_eur": "Net Revenue (€)", "product_name": "Product"},
                 )
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                gold_df = pd.DataFrame()
+
             render_sql_snippet_module(
-                module_id="gold_prod_mart",
-                title_en="Gold Mart SQL & Aligned Table (`koro_marts.mart_product_performance`)",
+                module_id="gold_dynamic_mart",
+                title_en="Gold View Compiled via dbt (`koro_marts.mart_product_performance`)",
                 source_table_label=f"{self.project_id}.koro_marts.mart_product_performance",
                 sql_template=(
-                    "SELECT product_id, product_name, category_name, packaging_size,\n"
-                    "       sold_units, returned_units, return_rate_pct, net_revenue_eur, net_margin_pct\n"
-                    "FROM `koro_marts.mart_product_performance`\n"
-                    "WHERE order_date BETWEEN '{start_str}' AND '{end_str}'\n"
+                    "SELECT \n"
+                    "    p.product_id, p.product_name, p.category_name, p.packaging_size,\n"
+                    "    SUM(i.quantity_sold) AS total_sold_units,\n"
+                    "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur\n"
+                    "FROM `koro_silver.dim_products` p\n"
+                    "JOIN `koro_silver.fct_order_items` i USING (product_id)\n"
+                    "WHERE i.order_date BETWEEN '{start_str}' AND '{end_str}'\n"
+                    "GROUP BY p.product_id, p.product_name, p.category_name, p.packaging_size\n"
                     "ORDER BY net_revenue_eur DESC;"
                 ),
-                df_preview=df,
+                df_preview=gold_df,
                 start_date=start_date,
                 end_date=end_date,
                 is_en=is_en,
             )
 
-        def render_silver_returns(
+        def render_silver_star_schema(
             data_dict: dict[str, pd.DataFrame],
             is_en: bool,
             adapter: Any,
             start_date: date | None = None,
             end_date: date | None = None,
         ) -> None:
-            df = data_dict.get("int_returns_enriched", pd.DataFrame())
-            if not df.empty:
-                agg = (
-                    df.groupby(["packaging_size", "return_reason"], as_index=False)[
-                        "returned_units"
-                    ]
-                    .sum()
-                )
-                fig = px.bar(
-                    agg,
-                    x="packaging_size",
-                    y="returned_units",
-                    color="return_reason",
-                    barmode="group",
-                    title="Silver Layer: Returned Units by Packaging Size & Root Cause",
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            render_sql_snippet_module(
-                module_id="silver_returns",
-                title_en="Silver Enriched Returns (`koro_staging.int_returns_enriched`)",
-                source_table_label=f"{self.project_id}.koro_staging.int_returns_enriched",
-                sql_template=(
-                    "SELECT return_id, product_id, product_name, packaging_size,\n"
-                    "       return_reason, returned_units, refunded_eur\n"
-                    "FROM `koro_staging.int_returns_enriched`\n"
-                    "WHERE return_date BETWEEN '{start_str}' AND '{end_str}';"
-                ),
-                df_preview=df.head(25),
-                start_date=start_date,
-                end_date=end_date,
-                is_en=is_en,
+            st.markdown(
+                "#### 🥈 Silver Layer: Kimball Conformed Star Schema"
+                if is_en
+                else "#### 🥈 Silver 銀牌層：Kimball 標準星狀綱要（Facts & Dimensions）"
             )
+            st.caption(
+                "Conformed dimensions and granular transactional facts cleansed from Bronze raw data."
+                if is_en
+                else "由 Bronze 銅牌原始數據清洗、去重並正規化而成的標準事實表與維度表。"
+            )
+
+            schema_tab1, schema_tab2, schema_tab3, schema_tab4 = st.tabs(
+                [
+                    "📄 fct_order_items (Line Grain)",
+                    "📦 fct_orders (Order Grain)",
+                    "🔄 fct_returns (Event Grain)",
+                    "🏷️ dim_products & categories",
+                ]
+            )
+            with schema_tab1:
+                df_items = data_dict.get("fct_order_items", pd.DataFrame())
+                st.dataframe(df_items.head(25), use_container_width=True)
+            with schema_tab2:
+                df_ord = data_dict.get("fct_orders", pd.DataFrame())
+                st.dataframe(df_ord.head(25), use_container_width=True)
+            with schema_tab3:
+                df_ret = data_dict.get("fct_returns", pd.DataFrame())
+                st.dataframe(df_ret.head(25), use_container_width=True)
+            with schema_tab4:
+                df_p = data_dict.get("dim_products", pd.DataFrame())
+                st.dataframe(df_p, use_container_width=True)
 
         def render_bronze_orders(
             data_dict: dict[str, pd.DataFrame],
@@ -324,20 +354,20 @@ class KoroAdapter(BaseCockpitAdapter):
             "gold": {
                 "tabs": [
                     MedallionTabSpec(
-                        tab_id="gold_sku_perf",
-                        title_en="🥇 SKU & Category Performance Mart",
-                        title_zh="🥇 商品與品類表現寬表 (Gold Mart)",
-                        render_content=render_gold_product_mart,
+                        tab_id="gold_dynamic_mart",
+                        title_en="🥇 Dynamic Gold Mart (Compiled from Silver)",
+                        title_zh="🥇 金牌動態寬表（由 Silver 即時編譯）",
+                        render_content=render_gold_dynamic_mart,
                     )
                 ]
             },
             "silver": {
                 "tabs": [
                     MedallionTabSpec(
-                        tab_id="silver_returns",
-                        title_en="🥈 Enriched Returns & Packaging Quality",
-                        title_zh="🥈 退貨原因與包裝品質明細 (Silver)",
-                        render_content=render_silver_returns,
+                        tab_id="silver_star_schema",
+                        title_en="🥈 Kimball Star Schema (Facts & Dimensions)",
+                        title_zh="🥈 Kimball 星狀綱要（事實表與維度表）",
+                        render_content=render_silver_star_schema,
                     )
                 ]
             },
@@ -345,8 +375,8 @@ class KoroAdapter(BaseCockpitAdapter):
                 "tabs": [
                     MedallionTabSpec(
                         tab_id="bronze_shopware",
-                        title_en="🥉 Raw Shopware 6 Orders",
-                        title_zh="🥉 Shopware 6 原始訂單紀錄 (Bronze)",
+                        title_en="🥉 Raw Ingested Orders & Catalog",
+                        title_zh="🥉 原始攝取訂單與目錄 (Bronze)",
                         render_content=render_bronze_orders,
                     )
                 ]
@@ -361,14 +391,16 @@ class KoroAdapter(BaseCockpitAdapter):
     @property
     def default_system_prompt_en(self) -> str:
         return (
-            "You are the KoRo Analytics Engineering Copilot. Help stakeholders understand "
-            "product catalog data, available metrics, and diagnose business anomalies."
+            "You are the KoRo Analytics Engineering Copilot. Help stakeholders explore "
+            "Kimball Star Schema facts and dimensions (dim_products, fct_order_items, fct_returns), "
+            "understand governed metric definitions, and diagnose business anomalies."
         )
 
     @property
     def default_system_prompt_zh(self) -> str:
         return (
-            "您是 KoRo 分析工程協作助理。協助主管理解商品目錄、指標定義並診斷營運異常。"
+            "您是 KoRo 分析工程協作助理。協助主管理解 Kimball 星狀模型事實表與維度表"
+            "（dim_products, fct_order_items, fct_returns）、指標定義並診斷營運異常。"
         )
 
     @property
@@ -388,6 +420,10 @@ class KoroAdapter(BaseCockpitAdapter):
     @property
     def supports_spec_guidance(self) -> bool:
         return True
+
+    @property
+    def supports_ae_workflow(self) -> bool:
+        return False
 
     def handle_spec_inquiry_turn(
         self,

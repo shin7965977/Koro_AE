@@ -1,12 +1,27 @@
-"""Deterministic Medallion Data Engine for KoRo E-Commerce POC.
+"""Deterministic Medallion Data Engine conforming to Ralph Kimball Dimensional Modeling.
 
-Generates realistic public catalog attributes and synthetic transactional records
-spanning Bronze, Silver, and Gold layers with zero external cloud dependencies.
+Bronze Layer:
+  - raw_shopware_orders: Ingested order headers
+  - raw_koro_products: Ingested raw catalog
+  - raw_return_logs: Ingested return claims and inspection records
+
+Silver Layer (Strict Star Schema):
+  - dim_products: Conformed product dimension (SKU grain)
+  - dim_categories: Conformed category hierarchy dimension
+  - dim_customers: Customer market & segment dimension
+  - fct_orders: Order grain transaction fact
+  - fct_order_items: Line-item grain transaction fact (lowest grain)
+  - fct_returns: Event grain return & defect inspection fact
+
+Note: In accordance with Kimball methodology, Gold Mart aggregations
+(mart_product_performance, mart_category_daily) are dynamically compiled
+downstream from Silver facts & dimensions rather than stored as hardcoded static tables.
 """
 
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -16,10 +31,12 @@ def build_koro_medallion_data(
     start_date: date | None = None,
     end_date: date | None = None,
 ) -> dict[str, pd.DataFrame]:
-    """Generate deterministic Bronze, Silver, and Gold DataFrames for KoRo POC."""
+    """Generate deterministic Bronze raw tables and Silver Kimball Star Schema DataFrames."""
     rng = np.random.default_rng(42)
 
-    # 1. Catalog Definition (Bronze: raw_koro_products)
+    # =========================================================================
+    # 1. BRONZE LAYER: Raw Catalog (`raw_koro_products`)
+    # =========================================================================
     catalog_rows = [
         # Nuts & Butters
         ("KORO-NUT-001", "Organic Cashews Bulk", "Nuts & Butters", "1kg", 15.50, 9.80, True, 420),
@@ -38,7 +55,7 @@ def build_koro_medallion_data(
         ("KORO-SNK-001", "Vegan Protein Bar Hazelnut", "Snacks & Bars", "250g", 13.90, 7.80, True, 630),
         ("KORO-SNK-002", "Dark Chocolate Pretzel Bites", "Snacks & Bars", "500g", 10.50, 5.90, True, 510),
     ]
-    raw_products = pd.DataFrame(
+    raw_koro_products = pd.DataFrame(
         catalog_rows,
         columns=[
             "product_id",
@@ -52,7 +69,64 @@ def build_koro_medallion_data(
         ],
     )
 
-    # 2. Daily Order & Line-Item Generation over 90 days (2026-08-03 to 2026-10-31)
+    # =========================================================================
+    # 2. SILVER DIMENSIONS: Conformed Dimensions (`dim_products`, `dim_categories`, `dim_customers`)
+    # =========================================================================
+    category_mapping = {
+        "Nuts & Butters": {"category_id": "CAT-NUT", "department": "Food & Pantry"},
+        "Dried Fruits": {"category_id": "CAT-FRU", "department": "Food & Pantry"},
+        "Superfoods & Seeds": {"category_id": "CAT-SUP", "department": "Health & Nutrition"},
+        "Snacks & Bars": {"category_id": "CAT-SNK", "department": "Snacking"},
+    }
+
+    dim_categories = pd.DataFrame(
+        [
+            {
+                "category_id": v["category_id"],
+                "category_name": k,
+                "department": v["department"],
+            }
+            for k, v in category_mapping.items()
+        ]
+    )
+
+    dim_products = raw_koro_products.copy()
+    dim_products["category_id"] = dim_products["category_name"].map(
+        lambda c: category_mapping[c]["category_id"]
+    )
+    dim_products = dim_products[
+        [
+            "product_id",
+            "product_name",
+            "category_id",
+            "category_name",
+            "packaging_size",
+            "unit_price_eur",
+            "unit_cost_eur",
+            "is_available",
+            "stock_on_hand",
+        ]
+    ]
+
+    markets = ["DE", "AT", "FR", "NL"]
+    segments = ["D2C Repeat", "D2C First-Time", "B2B Office"]
+    customers_data = []
+    c_idx = 1
+    for m in markets:
+        for s in segments:
+            customers_data.append(
+                {
+                    "customer_id": f"CUST-{c_idx:03d}",
+                    "market_country": m,
+                    "customer_segment": s,
+                }
+            )
+            c_idx += 1
+    dim_customers = pd.DataFrame(customers_data)
+
+    # =========================================================================
+    # 3. DATE BOUNDARY & SIMULATION TARGETS
+    # =========================================================================
     base_start = date(2026, 8, 3)
     base_end = date(2026, 10, 31)
     eff_start = max(base_start, start_date) if start_date else base_start
@@ -63,128 +137,80 @@ def build_koro_medallion_data(
     total_days = (base_end - base_start).days + 1
     all_dates = [base_start + timedelta(days=i) for i in range(total_days)]
 
-    # Deterministic SKU sales & return parameters
     sku_targets = {
-        "KORO-NUT-001": {"sold": 5000, "ret": 260, "disc_rate": 0.06},  # 5.20% return rate!
-        "KORO-NUT-002": {"sold": 3200, "ret": 112, "disc_rate": 0.05},  # 3.50% return rate
-        "KORO-NUT-003": {"sold": 6400, "ret": 96, "disc_rate": 0.04},   # 1.50% return rate
-        "KORO-NUT-004": {"sold": 4100, "ret": 74, "disc_rate": 0.05},   # 1.80% return rate
-        "KORO-NUT-005": {"sold": 1800, "ret": 63, "disc_rate": 0.04},   # 3.50% return rate
-        "KORO-FRU-001": {"sold": 5500, "ret": 99, "disc_rate": 0.07},   # 1.80% return rate
-        "KORO-FRU-002": {"sold": 4800, "ret": 82, "disc_rate": 0.06},   # 1.71% return rate
-        "KORO-FRU-003": {"sold": 2900, "ret": 35, "disc_rate": 0.05},   # 1.21% return rate
-        "KORO-SUP-001": {"sold": 6100, "ret": 61, "disc_rate": 0.04},   # 1.00% return rate
-        "KORO-SUP-002": {"sold": 3400, "ret": 41, "disc_rate": 0.04},   # 1.21% return rate
-        "KORO-SNK-001": {"sold": 4600, "ret": 69, "disc_rate": 0.08},   # 1.50% return rate
-        "KORO-SNK-002": {"sold": 3800, "ret": 57, "disc_rate": 0.07},   # 1.50% return rate
+        "KORO-NUT-001": {"sold": 5000, "ret": 260, "disc_rate": 0.06},  # Outlier 5.20% return rate
+        "KORO-NUT-002": {"sold": 3200, "ret": 112, "disc_rate": 0.05},
+        "KORO-NUT-003": {"sold": 6400, "ret": 96, "disc_rate": 0.04},
+        "KORO-NUT-004": {"sold": 4100, "ret": 74, "disc_rate": 0.05},
+        "KORO-NUT-005": {"sold": 1800, "ret": 63, "disc_rate": 0.04},
+        "KORO-FRU-001": {"sold": 5500, "ret": 99, "disc_rate": 0.07},
+        "KORO-FRU-002": {"sold": 4800, "ret": 82, "disc_rate": 0.06},
+        "KORO-FRU-003": {"sold": 2900, "ret": 35, "disc_rate": 0.05},
+        "KORO-SUP-001": {"sold": 6100, "ret": 61, "disc_rate": 0.04},
+        "KORO-SUP-002": {"sold": 3400, "ret": 41, "disc_rate": 0.04},
+        "KORO-SNK-001": {"sold": 4600, "ret": 69, "disc_rate": 0.08},
+        "KORO-SNK-002": {"sold": 3800, "ret": 57, "disc_rate": 0.07},
     }
 
-    # Build daily records per SKU
-    daily_records = []
-    for _, prod in raw_products.iterrows():
-        pid = prod["product_id"]
-        spec = sku_targets[pid]
-        base_daily_sold = spec["sold"] // total_days
-        rem_sold = spec["sold"] % total_days
-        base_daily_ret = spec["ret"] // total_days
-        rem_ret = spec["ret"] % total_days
-
-        for d_idx, d_val in enumerate(all_dates):
-            s_units = base_daily_sold + (1 if d_idx < rem_sold else 0)
-            r_units = base_daily_ret + (1 if d_idx < rem_ret else 0)
-            gross = round(s_units * float(prod["unit_price_eur"]), 2)
-            disc = round(gross * spec["disc_rate"], 2)
-            refund = round(r_units * float(prod["unit_price_eur"]), 2)
-            net = round(gross - disc - refund, 2)
-            cogs = round(s_units * float(prod["unit_cost_eur"]), 2)
-
-            daily_records.append(
-                {
-                    "order_date": d_val,
-                    "product_id": pid,
-                    "product_name": prod["product_name"],
-                    "category_name": prod["category_name"],
-                    "packaging_size": prod["packaging_size"],
-                    "unit_price_eur": float(prod["unit_price_eur"]),
-                    "unit_cost_eur": float(prod["unit_cost_eur"]),
-                    "is_available": bool(prod["is_available"]),
-                    "stock_on_hand": int(prod["stock_on_hand"]),
-                    "sold_units": int(s_units),
-                    "returned_units": int(r_units),
-                    "gross_revenue_eur": gross,
-                    "discount_eur": disc,
-                    "refunded_eur": refund,
-                    "net_revenue_eur": net,
-                    "cogs_eur": cogs,
-                }
-            )
-
-    df_daily_sku = pd.DataFrame(daily_records)
-    # Apply date window filter
-    mask = (df_daily_sku["order_date"] >= eff_start) & (
-        df_daily_sku["order_date"] <= eff_end
-    )
-    df_filtered = df_daily_sku[mask].copy()
-
-    # 3. Gold Layer: mart_product_performance
-    grp_cols = [
-        "product_id",
-        "product_name",
-        "category_name",
-        "packaging_size",
-        "unit_price_eur",
-        "unit_cost_eur",
-        "is_available",
-        "stock_on_hand",
-    ]
-    mart_prod = (
-        df_filtered.groupby(grp_cols, as_index=False)
-        .agg(
-            sold_units=("sold_units", "sum"),
-            returned_units=("returned_units", "sum"),
-            gross_revenue_eur=("gross_revenue_eur", "sum"),
-            discount_eur=("discount_eur", "sum"),
-            refunded_eur=("refunded_eur", "sum"),
-            net_revenue_eur=("net_revenue_eur", "sum"),
-            cogs_eur=("cogs_eur", "sum"),
-        )
-        .sort_values("net_revenue_eur", ascending=False)
-        .reset_index(drop=True)
-    )
-    mart_prod["return_rate_pct"] = (
-        mart_prod["returned_units"] * 100.0 / mart_prod["sold_units"].replace(0, np.nan)
-    ).round(2)
-    mart_prod["net_margin_eur"] = (
-        mart_prod["net_revenue_eur"] - mart_prod["cogs_eur"]
-    ).round(2)
-    mart_prod["net_margin_pct"] = (
-        mart_prod["net_margin_eur"]
-        * 100.0
-        / mart_prod["net_revenue_eur"].replace(0, np.nan)
-    ).round(2)
-    mart_prod["days_of_supply"] = (
-        mart_prod["stock_on_hand"]
-        / (mart_prod["sold_units"] / max(1, (eff_end - eff_start).days + 1))
-    ).round(1)
-
-    # 4. Gold Layer: mart_category_daily
-    mart_cat_daily = (
-        df_filtered.groupby(["order_date", "category_name"], as_index=False)
-        .agg(
-            sold_units=("sold_units", "sum"),
-            returned_units=("returned_units", "sum"),
-            gross_revenue_eur=("gross_revenue_eur", "sum"),
-            discount_eur=("discount_eur", "sum"),
-            refunded_eur=("refunded_eur", "sum"),
-            net_revenue_eur=("net_revenue_eur", "sum"),
-            cogs_eur=("cogs_eur", "sum"),
-        )
-        .sort_values(["order_date", "category_name"])
-        .reset_index(drop=True)
-    )
-
-    # 5. Silver Layer: int_returns_enriched (Return Reason Breakdown)
+    # =========================================================================
+    # 4. SILVER FACTS: `fct_order_items`, `fct_orders`, `fct_returns`
+    # =========================================================================
+    order_items_rows = []
     return_rows = []
+    item_seq = 100001
+    ret_seq = 50001
+    ord_seq = 10001
+
+    # Deterministic generation across all dates
+    for d_idx, cur_date in enumerate(all_dates):
+        daily_order_count = 110  # ~110 orders per day across markets
+        orders_for_day = [f"SW6-{ord_seq + i}" for i in range(daily_order_count)]
+        ord_seq += daily_order_count
+
+        # Distribute SKU sales across orders
+        for _, prod in raw_koro_products.iterrows():
+            pid = prod["product_id"]
+            spec = sku_targets[pid]
+            base_s = spec["sold"] // total_days
+            rem_s = spec["sold"] % total_days
+            s_units = base_s + (1 if d_idx < rem_s else 0)
+
+            base_r = spec["ret"] // total_days
+            rem_r = spec["ret"] % total_days
+            r_units = base_r + (1 if d_idx < rem_r else 0)
+
+            unit_price = float(prod["unit_price_eur"])
+            unit_cost = float(prod["unit_cost_eur"])
+
+            # Create line items
+            if s_units > 0:
+                assigned_order = orders_for_day[d_idx % len(orders_for_day)]
+                assigned_cust = customers_data[(d_idx + int(pid[-1:])) % len(customers_data)]["customer_id"]
+                gross = round(s_units * unit_price, 2)
+                disc = round(gross * spec["disc_rate"], 2)
+                refund = round(r_units * unit_price, 2)
+                net = round(gross - disc - refund, 2)
+                cogs = round(s_units * unit_cost, 2)
+
+                order_items_rows.append(
+                    {
+                        "item_id": f"ITEM-{item_seq}",
+                        "order_id": assigned_order,
+                        "customer_id": assigned_cust,
+                        "order_date": cur_date,
+                        "product_id": pid,
+                        "quantity_sold": int(s_units),
+                        "unit_price_eur": unit_price,
+                        "unit_cost_eur": unit_cost,
+                        "line_gross_eur": gross,
+                        "line_discount_eur": disc,
+                        "line_refund_eur": refund,
+                        "line_net_eur": net,
+                        "cogs_eur": cogs,
+                    }
+                )
+                item_seq += 1
+
     reason_shares_1kg_nut = [
         ("Vacuum Packaging Defect", 0.78),
         ("Shipping Damage", 0.12),
@@ -198,77 +224,125 @@ def build_koro_medallion_data(
         ("Wrong Item", 0.10),
     ]
 
-    ret_seq = 1
-    for _, row in mart_prod.iterrows():
-        pid = row["product_id"]
-        total_r = int(row["returned_units"])
+    ret_seq = 50001
+    for _, prod in raw_koro_products.iterrows():
+        pid = prod["product_id"]
+        spec = sku_targets[pid]
+        tot_ret = spec["ret"]
         shares = (
             reason_shares_1kg_nut
-            if (row["category_name"] == "Nuts & Butters" and row["packaging_size"] == "1kg")
+            if (prod["category_name"] == "Nuts & Butters" and prod["packaging_size"] == "1kg")
             else reason_shares_other
         )
-        allocated = 0
-        for idx_r, (reason_name, share) in enumerate(shares):
-            if idx_r == len(shares) - 1:
-                units_r = max(0, total_r - allocated)
+        unit_price = float(prod["unit_price_eur"])
+
+        # Allocate exact counts across reasons
+        alloc = 0
+        reason_counts = []
+        for idx_sh, (r_name, r_share) in enumerate(shares):
+            if idx_sh == len(shares) - 1:
+                cnt = max(0, tot_ret - alloc)
             else:
-                units_r = int(round(total_r * share))
-                allocated += units_r
-            return_rows.append(
-                {
-                    "return_id": f"RET-2026-{ret_seq:04d}",
-                    "product_id": pid,
-                    "product_name": row["product_name"],
-                    "category_name": row["category_name"],
-                    "packaging_size": row["packaging_size"],
-                    "return_reason": reason_name,
-                    "returned_units": units_r,
-                    "refunded_eur": round(units_r * float(row["unit_price_eur"]), 2),
-                }
-            )
-            ret_seq += 1
+                cnt = int(round(tot_ret * r_share))
+                alloc += cnt
+            reason_counts.append((r_name, cnt))
 
-    int_returns_enriched = pd.DataFrame(return_rows)
+        # Distribute into return rows across dates
+        cur_r_idx = 0
+        rem_in_reason = reason_counts[cur_r_idx][1] if reason_counts else 0
 
-    # 6. Bronze Layer: raw_shopware_orders (Order Headers)
-    markets = ["DE", "AT", "FR", "NL"]
-    segments = ["D2C Repeat", "D2C First-Time", "B2B Office"]
-    daily_totals = (
-        df_filtered.groupby("order_date", as_index=False)
+        for d_idx, cur_date in enumerate(all_dates):
+            base_r = spec["ret"] // total_days
+            rem_r = spec["ret"] % total_days
+            r_units = base_r + (1 if d_idx < rem_r else 0)
+
+            while r_units > 0 and cur_r_idx < len(reason_counts):
+                take = min(r_units, rem_in_reason)
+                if take > 0:
+                    r_name = reason_counts[cur_r_idx][0]
+                    return_rows.append(
+                        {
+                            "return_id": f"RET-2026-{ret_seq:05d}",
+                            "order_id": f"SW6-{10001 + d_idx * 110}",
+                            "customer_id": customers_data[(d_idx + int(pid[-1:])) % len(customers_data)]["customer_id"],
+                            "return_date": cur_date,
+                            "product_id": pid,
+                            "return_reason": r_name,
+                            "returned_units": int(take),
+                            "refunded_eur": round(take * unit_price, 2),
+                        }
+                    )
+                    ret_seq += 1
+                    r_units -= take
+                    rem_in_reason -= take
+
+                if rem_in_reason == 0:
+                    cur_r_idx += 1
+                    if cur_r_idx < len(reason_counts):
+                        rem_in_reason = reason_counts[cur_r_idx][1]
+
+    df_order_items = pd.DataFrame(order_items_rows)
+    df_returns = pd.DataFrame(return_rows)
+
+    # Filter to requested date window
+    mask_items = (df_order_items["order_date"] >= eff_start) & (df_order_items["order_date"] <= eff_end)
+    fct_order_items = df_order_items[mask_items].copy().reset_index(drop=True)
+
+    mask_ret = (df_returns["return_date"] >= eff_start) & (df_returns["return_date"] <= eff_end)
+    fct_returns = df_returns[mask_ret].copy().reset_index(drop=True)
+
+    # Roll up fct_orders from line items
+    fct_orders = (
+        fct_order_items.groupby(["order_id", "customer_id", "order_date"], as_index=False)
         .agg(
-            gross_revenue_eur=("gross_revenue_eur", "sum"),
-            discount_eur=("discount_eur", "sum"),
-            net_revenue_eur=("net_revenue_eur", "sum"),
+            total_items_count=("quantity_sold", "sum"),
+            total_gross_eur=("line_gross_eur", "sum"),
+            total_discount_eur=("line_discount_eur", "sum"),
+            total_refund_eur=("line_refund_eur", "sum"),
+            total_net_eur=("line_net_eur", "sum"),
+            total_cogs_eur=("cogs_eur", "sum"),
         )
-        .sort_values("order_date")
+        .sort_values(["order_date", "order_id"])
+        .reset_index(drop=True)
     )
 
-    order_rows = []
-    ord_seq = 10001
-    for _, d_row in daily_totals.iterrows():
-        # Create ~110 synthetic orders per day so AOV is ~62 EUR
-        num_orders = 110
-        for o_i in range(num_orders):
-            share = 1.0 / num_orders
-            order_rows.append(
-                {
-                    "order_id": f"SW6-{ord_seq}",
-                    "order_date": d_row["order_date"],
-                    "market_country": markets[o_i % len(markets)],
-                    "customer_segment": segments[o_i % len(segments)],
-                    "order_gross_eur": round(float(d_row["gross_revenue_eur"]) * share, 2),
-                    "discount_eur": round(float(d_row["discount_eur"]) * share, 2),
-                    "order_net_eur": round(float(d_row["net_revenue_eur"]) * share, 2),
-                }
-            )
-            ord_seq += 1
+    # =========================================================================
+    # 5. BRONZE LAYER: Raw Headers & Logs (`raw_shopware_orders`, `raw_return_logs`)
+    # =========================================================================
+    cust_map = {c["customer_id"]: c for c in customers_data}
+    raw_orders_rows = []
+    for _, ord_row in fct_orders.iterrows():
+        c_info = cust_map.get(ord_row["customer_id"], {"market_country": "DE", "customer_segment": "D2C Repeat"})
+        raw_orders_rows.append(
+            {
+                "order_id": ord_row["order_id"],
+                "order_date": ord_row["order_date"],
+                "market_country": c_info["market_country"],
+                "customer_segment": c_info["customer_segment"],
+                "order_gross_eur": ord_row["total_gross_eur"],
+                "discount_eur": ord_row["total_discount_eur"],
+                "order_net_eur": ord_row["total_net_eur"],
+            }
+        )
+    raw_shopware_orders = pd.DataFrame(raw_orders_rows)
 
-    raw_shopware_orders = pd.DataFrame(order_rows)
+    raw_return_logs = fct_returns[
+        ["return_id", "order_id", "product_id", "return_date", "return_reason", "returned_units", "refunded_eur"]
+    ].copy()
 
+    # =========================================================================
+    # RETURN KIMBALL STRUCTURE (Zero hardcoded Gold Marts!)
+    # =========================================================================
     return {
-        "mart_product_performance": mart_prod,
-        "mart_category_daily": mart_cat_daily,
-        "int_returns_enriched": int_returns_enriched,
+        # Bronze Ingestion Layer
+        "raw_koro_products": raw_koro_products,
         "raw_shopware_orders": raw_shopware_orders,
-        "raw_koro_products": raw_products,
+        "raw_return_logs": raw_return_logs,
+        # Silver Conformed Star Schema Layer (Kimball Core)
+        "dim_products": dim_products,
+        "dim_categories": dim_categories,
+        "dim_customers": dim_customers,
+        "fct_orders": fct_orders,
+        "fct_order_items": fct_order_items,
+        "fct_returns": fct_returns,
     }
