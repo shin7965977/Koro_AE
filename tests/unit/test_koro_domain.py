@@ -222,7 +222,7 @@ def test_unmatched_query_does_not_dump_catalog_and_handles_api_key() -> None:
 
 
 def test_candidate_models_multi_tier_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify candidate models hierarchy: gemini-3.8-flash -> 3.6-flash -> 3.5-flash-lite."""
+    """Verify candidate models hierarchy: gemini-3.5-flash-lite -> 3.5-flash -> 3.6-flash -> 3.8-flash."""
     from ai.spec_guide import _call_gemini_with_grounding
 
     attempted_models: list[str] = []
@@ -234,9 +234,9 @@ def test_candidate_models_multi_tier_fallback(monkeypatch: pytest.MonkeyPatch) -
 
         def generate_content(self, model: str, contents: str):
             attempted_models.append(model)
-            if model == "gemini-3.5-flash-lite":
+            if model == "gemini-3.8-flash":
                 class Resp:
-                    text = "Success from 3.5-flash-lite"
+                    text = "Success from 3.8-flash"
                 return Resp()
             raise Exception(f"Model {model} simulated failure")
 
@@ -254,9 +254,12 @@ def test_candidate_models_multi_tier_fallback(monkeypatch: pytest.MonkeyPatch) -
         api_key="AIzaSyDummyTestKey1234567890",
     )
 
-    assert "gemini-3.8-flash" in attempted_models
-    assert "gemini-3.6-flash" in attempted_models
-    assert "gemini-3.5-flash-lite" in attempted_models
-    assert reply == "Success from 3.5-flash-lite"
+    assert attempted_models == [
+        "gemini-3.5-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.6-flash",
+        "gemini-3.8-flash",
+    ]
+    assert reply == "Success from 3.8-flash"
     assert err is None
 

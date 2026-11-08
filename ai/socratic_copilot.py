@@ -116,11 +116,11 @@ def _call_gemini_socratic(
         )
 
         models_to_try = [
-            os.getenv("LLM_MODEL", "gemini-2.5-flash"),
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-3.8-flash",
+            os.getenv("LLM_MODEL", "gemini-3.5-flash-lite"),
             "gemini-3.5-flash-lite",
+            "gemini-3.5-flash",
+            "gemini-3.6-flash",
+            "gemini-3.8-flash",
         ]
         models_to_try = list(dict.fromkeys(models_to_try))
 
