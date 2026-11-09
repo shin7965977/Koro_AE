@@ -728,6 +728,55 @@ def test_recency_override_user_demands_september_over_earlier_august() -> None:
     assert (df["reporting_month"] == "2026-09").all()
 
 
+def test_socratic_english_mode_zero_chinese_leakage() -> None:
+    """Verify that when is_en=True, all Socratic questions, options, memos, and rejections have 0 Chinese characters."""
+    import re
+    chinese_pattern = re.compile(r"[\u4e00-\u9fff]")
+
+    adapter = KoroAdapter()
+    data = adapter.load_domain_data()
+    reflection = DatabaseReflectionService(data)
+
+    # 1. Geographic Clarification in English
+    s_geo = analyze_socratic_inquiry("Can we see European market product revenue?", reflection=reflection, is_en=True)
+    assert s_geo.is_out_of_domain is False
+    assert s_geo.needs_clarification is True
+    for q in s_geo.questions:
+        assert not chinese_pattern.search(q.title), f"Chinese found in title: {q.title}"
+        assert not chinese_pattern.search(q.explanation), f"Chinese found in explanation: {q.explanation}"
+        for opt in q.options:
+            assert not chinese_pattern.search(opt["label"]), f"Chinese found in option: {opt['label']}"
+
+    # 2. Out-of-Domain Rejection in English
+    s_rej = analyze_socratic_inquiry("Can we see Taiwanese product revenue?", reflection=reflection, is_en=True)
+    assert s_rej.is_out_of_domain is True
+    assert not chinese_pattern.search(s_rej.rejection_reason), f"Chinese in rejection: {s_rej.rejection_reason}"
+
+    # 3. Chat Advice in English
+    history = [{"role": "user", "content": "I want to focus on German market nuts in October"}]
+    advice = chat_socratic_turn(
+        user_message="I want to focus on German market nuts in October",
+        chat_history=history,
+        user_goal="Bulk Packaging Return Diagnosis",
+        reflection=reflection,
+        is_en=True,
+    )
+    assert not chinese_pattern.search(advice), f"Chinese in advice: {advice}"
+
+    # 4. Requirement Memo Summary in English
+    memo = summarize_socratic_requirements(
+        user_goal="Bulk Packaging Return Diagnosis",
+        decisions={"geographic": "DE", "temporal": "2026-10-01:2026-10-31"},
+        chat_history=history,
+        is_en=True,
+    )
+    assert not chinese_pattern.search(memo["analytical_objective"]), f"Chinese in objective: {memo['analytical_objective']}"
+    assert not chinese_pattern.search(memo["date_range"]), f"Chinese in date_range: {memo['date_range']}"
+    if memo.get("chat_context_notes"):
+        assert not chinese_pattern.search(memo["chat_context_notes"]), f"Chinese in notes: {memo['chat_context_notes']}"
+
+
+
 
 
 

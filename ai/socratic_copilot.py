@@ -106,10 +106,16 @@ def get_lakehouse_watermark(
     }
 
 
+def is_chinese_text(text: str) -> bool:
+    """Check if the text contains any Chinese characters."""
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
 def _call_gemini_socratic(
     user_goal: str,
     watermark: dict[str, Any],
     api_key: str,
+    is_en: bool | None = None,
 ) -> tuple[SocraticSessionState | None, str | None]:
     """Call Google GenAI SDK to perform real LLM Socratic reasoning and intent extraction."""
     if not api_key or not api_key.strip():
@@ -125,97 +131,191 @@ def _call_gemini_socratic(
         markets_grounded = watermark.get("active_markets", ["DE", "AT", "FR"])
         market_list_str = ", ".join(markets_grounded)
 
-        system_instruction = (
-            "You are the senior Analytics Engineering AI Copilot for the KoRo Lakehouse Platform.\n"
-            "Your mission is to evaluate stakeholder inquiries against the physical lakehouse schema, determine domain validity, clarify ambiguities, or strictly reject out-of-domain requests before dbt model compilation.\n\n"
-            "Conformed Lakehouse Metadata & Schema Grounding:\n"
-            "- Warehouse Engine: DuckDB in-process OLAP (main_silver, main_gold).\n"
-            "- Conformed Kimball Silver Tables & Columns:\n"
-            "  * dim_products (product_id, product_name, category_id, cost_eur, packaging_size, packaging_type, is_active)\n"
-            "  * dim_categories (category_id, category_name)\n"
-            "  * dim_customers (customer_id, market_country, customer_segment)\n"
-            "  * fct_orders (order_id, customer_id, order_date, voucher_code, voucher_discount_eur, order_gross_eur, order_net_eur, is_returned)\n"
-            "  * fct_order_items (order_item_id, order_id, product_id, quantity, unit_price_eur, line_total_eur)\n"
-            "  * fct_returns (return_id, order_id, product_id, return_date, return_reason, refunded_eur, is_damaged_packaging)\n"
-            f"- Physical Date Watermarks: Data spans {watermark['min_date']} to {watermark['max_date']}. Latest physical month is {watermark['current_month']} ({watermark['current_month_start']} to {watermark['current_month_end']}).\n"
-            f"- Physical Customer European Sales Markets in Database: {market_list_str} (DE=Germany, AT=Austria, FR=France).\n"
-            "- Official Product Catalog (Only these 12 core SKUs exist in this warehouse):\n"
-            "  1. PROD-001: Organic Cashew Nuts Broken 1kg (Nuts & Butters)\n"
-            "  2. PROD-002: Freeze-Dried Strawberries 100g (Dried Fruits)\n"
-            "  3. PROD-003: Organic Deglet Nour Dates 1kg (Dried Fruits)\n"
-            "  4. PROD-004: Natural Almond Butter 500g (Nuts & Butters)\n"
-            "  5. PROD-005: Organic Chia Seeds 1kg (Superfoods & Cooking)\n"
-            "  6. PROD-006: Dried Mango Slices Brooks 500g (Dried Fruits)\n"
-            "  7. PROD-007: Organic Peanut Butter Crunchy 1kg (Nuts & Butters)\n"
-            "  8. PROD-008: Protein Bar Chocolate Brownie 12x60g (Snacks & Bars)\n"
-            "  9. PROD-009: Organic Coconut Flour 1kg (Superfoods & Cooking)\n"
-            "  10. PROD-010: Walnuts Halves 1kg (Nuts & Butters)\n"
-            "  11. PROD-011: Roasted Hazelnuts 1kg (Nuts & Butters)\n"
-            "  12. PROD-012: Organic Acai Powder 100g (Superfoods & Cooking)\n\n"
-            "Strict Anti-Smell & Socratic Governance Rules (Zero-Facade Standard):\n"
-            "1. OUT-OF-DOMAIN REJECTIONS:\n"
-            "   - If the user query requests entities completely unrelated to eCommerce data analytics (e.g. 'who is president', 'weather / 天氣', 'tesla / 特斯拉', 'apple iphone', 'stock price', 'joke'), mark is_out_of_domain=true.\n"
-            "   - If the user query asks for product origins from regions entirely outside European eCommerce operations (e.g. 'Taiwanese products / 台灣產品', 'US products', 'Japan products'), mark is_out_of_domain=true with a professional explanation:\n"
-            "     'KoRo 湖倉現有型錄僅包含 12 款歐洲堅果果乾 SKU，且顧客市場僅涵蓋歐洲 3 國 (DE, AT, FR)，無台灣/美國等外部產地資料。依 Zero-Facade 規範，系統拒絕合成不存在的指標模型。'\n\n"
-            "2. SMART GEOGRAPHIC MARKET CLARIFICATION (智慧地理市場引導):\n"
-            "   - In eCommerce, business users often say 'German products revenue', 'Spain product revenue', '歐洲國家商品的 REVENUE', or 'country revenue'.\n"
-            "   - Products do NOT have manufacturing origin_country, BUT dim_customers HAS physical customer market_country: DE, AT, FR.\n"
-            "   - When the user mentions European countries, country revenue, or specific European countries (e.g. 'German', 'Germany', '德國', 'Austria', '奧地利', 'France', '法國', 'Spain', '西班牙', '歐洲國家', '歐洲', '市場', '國別'):\n"
-            "     DO NOT FLATLY REJECT! Instead, guide the user via Socratic Clarification:\n"
-            "     * set is_out_of_domain=false, needs_clarification=true\n"
-            "     * add a question with dimension_type='geographic':\n"
-            "       question_id: 'geographic'\n"
-            "       title: '地理市場維度動態解析 (Market Geographic Intent Resolution)'\n"
-            f"       explanation: '系統已探查實體湖倉：商品維度未設產地，但顧客資料庫中真實記錄了 {len(markets_grounded)} 個歐洲營運市場 ({market_list_str})。請問您希望分析哪一個市場的顧客營收？'\n"
-            "       options:\n"
-            "         - id: 'DE', label: '🇩🇪 德國市場顧客訂單營收 (Germany - DE)', value: 'DE'\n"
-            "         - id: 'AT', label: '🇦🇹 奧地利市場顧客訂單營收 (Austria - AT)', value: 'AT'\n"
-            "         - id: 'FR', label: '🇫🇷 法國市場顧客訂單營收 (France - FR)', value: 'FR'\n"
-            "         - id: 'ALL_EU', label: '🇪🇺 全歐洲 3 國合併營收 (All European Markets)', value: 'ALL_EU'\n\n"
-            "3. LANGUAGE & LOCALIZATION:\n"
-            "   - If user inquiry is in English, output question titles, explanations, and options strictly in professional English.\n"
-            "   - If user inquiry is in Chinese, output in Traditional Chinese (繁體中文).\n\n"
-            "4. PRODUCT CATALOG / INVENTORY INQUIRIES:\n"
-            "   - If user asks about the product catalog size or list (e.g. '我有多少產品', '有多少商品', 'how many products', 'catalog list', 'list products'):\n"
-            "     * set is_out_of_domain=false, needs_clarification=false\n"
-            "     * locked_decisions: {'grain': 'catalog_summary'}\n\n"
-            "5. TEMPORAL BOUNDARY & EXCEEDED WATERMARK:\n"
-            f"   - Physical lakehouse transaction watermark is strictly {watermark['min_date']} to {watermark['max_date']} (months: 2026-08, 2026-09, 2026-10).\n"
-            "   - If the user asks for months outside this watermark (e.g. '4月 / April', '6月 / June', '11月 / November / Black Friday', '12月 / December'):\n"
-            "     DO NOT SILENTLY DEFAULT TO OCTOBER! Instead, add a 'temporal' clarification question:\n"
-            "     * question_id: 'temporal'\n"
-            "     * dimension_type: 'temporal'\n"
-            "     * title: '時間範圍超出實體水浮標記 (Temporal Watermark Exceeded)' (or in English if query in English)\n"
-            f"     * explanation: '系統實體湖倉水位範圍為 {watermark['min_date']} 至 {watermark['max_date']} (最新月份為 2026-10)。您所查詢的期間尚未發生或無歷史資料。請問您希望將時間範圍調整至實體數據庫內已存在的月份？'\n"
-            "     * options:\n"
-            "       - id: '2026-10-01:2026-10-31', label: '📅 檢視已載入之最近月份 2026 年 10 月數據 (推薦)', value: '2026-10-01:2026-10-31'\n"
-            "       - id: '2026-09-01:2026-09-30', label: '📅 檢視 2026 年 9 月數據', value: '2026-09-01:2026-09-30'\n"
-            "       - id: '2026-08-03:2026-08-31', label: '📅 檢視 2026 年 8 月數據', value: '2026-08-03:2026-08-31'\n"
-            f"       - id: '{watermark['min_date']}:{watermark['max_date']}', label: '📊 檢視湖倉全期數據 ({watermark['min_date']} 至 {watermark['max_date']})', value: '{watermark['min_date']}:{watermark['max_date']}'\n\n"
-            "6. PROMOTIONS & VOUCHERS:\n"
-            "   - If user asks about promotions, vouchers, discounts, or promotional orders (e.g. '促銷', '折價券', '折扣', 'voucher', 'discount', '促銷訂單量', 'black friday'):\n"
-            "     * locked_decisions['grain'] = 'promotions_vouchers'\n\n"
-            "7. TEMPORAL & GRAIN AMBIGUITY:\n"
-            "   - Temporal: If relative terms ('這個月', '本月', '最近', 'this month', 'recent') are used, add a 'temporal' question.\n"
-            "   - Grain: If returns/refunds are mentioned without specifying grain, add a 'grain' question.\n"
-            "   - If completely unambiguous and no clarification needed, set needs_clarification=false.\n\n"
-            "Output strictly valid JSON conforming to this schema:\n"
-            "{\n"
-            "  \"is_out_of_domain\": bool,\n"
-            "  \"rejection_reason\": str,\n"
-            "  \"needs_clarification\": bool,\n"
-            "  \"questions\": [\n"
-            "    {\n"
-            "      \"question_id\": str,\n"
-            "      \"dimension_type\": \"temporal\" | \"grain\" | \"geographic\",\n"
-            "      \"title\": str,\n"
-            "      \"explanation\": str,\n"
-            "      \"options\": [{\"id\": str, \"label\": str, \"value\": str}]\n"
-            "    }\n"
-            "  ],\n"
-            "  \"locked_decisions\": {\"grain\": str, \"temporal\": str, \"geographic\": str}\n"
-            "}"
-        )
+        if is_en is True:
+            system_instruction = (
+                "You are the senior Analytics Engineering AI Copilot for the KoRo Lakehouse Platform.\n"
+                "Your mission is to evaluate stakeholder inquiries against the physical lakehouse schema, determine domain validity, clarify ambiguities, or strictly reject out-of-domain requests before dbt model compilation.\n\n"
+                "STRICT LANGUAGE DIRECTIVE: Output 100% pure English. NEVER output any Chinese characters in question titles, explanations, option labels, or rejection reasons.\n\n"
+                "Conformed Lakehouse Metadata & Schema Grounding:\n"
+                "- Warehouse Engine: DuckDB in-process OLAP (main_silver, main_gold).\n"
+                "- Conformed Kimball Silver Tables & Columns:\n"
+                "  * dim_products (product_id, product_name, category_id, cost_eur, packaging_size, packaging_type, is_active)\n"
+                "  * dim_categories (category_id, category_name)\n"
+                "  * dim_customers (customer_id, market_country, customer_segment)\n"
+                "  * fct_orders (order_id, customer_id, order_date, voucher_code, voucher_discount_eur, order_gross_eur, order_net_eur, is_returned)\n"
+                "  * fct_order_items (order_item_id, order_id, product_id, quantity, unit_price_eur, line_total_eur)\n"
+                "  * fct_returns (return_id, order_id, product_id, return_date, return_reason, refunded_eur, is_damaged_packaging)\n"
+                f"- Physical Date Watermarks: Data spans {watermark['min_date']} to {watermark['max_date']}. Latest physical month is {watermark['current_month']} ({watermark['current_month_start']} to {watermark['current_month_end']}).\n"
+                f"- Physical Customer European Sales Markets in Database: {market_list_str} (DE=Germany, AT=Austria, FR=France).\n"
+                "- Official Product Catalog (Only these 12 core SKUs exist in this warehouse):\n"
+                "  1. PROD-001: Organic Cashew Nuts Broken 1kg (Nuts & Butters)\n"
+                "  2. PROD-002: Freeze-Dried Strawberries 100g (Dried Fruits)\n"
+                "  3. PROD-003: Organic Deglet Nour Dates 1kg (Dried Fruits)\n"
+                "  4. PROD-004: Natural Almond Butter 500g (Nuts & Butters)\n"
+                "  5. PROD-005: Organic Chia Seeds 1kg (Superfoods & Cooking)\n"
+                "  6. PROD-006: Dried Mango Slices Brooks 500g (Dried Fruits)\n"
+                "  7. PROD-007: Organic Peanut Butter Crunchy 1kg (Nuts & Butters)\n"
+                "  8. PROD-008: Protein Bar Chocolate Brownie 12x60g (Snacks & Bars)\n"
+                "  9. PROD-009: Organic Coconut Flour 1kg (Superfoods & Cooking)\n"
+                "  10. PROD-010: Walnuts Halves 1kg (Nuts & Butters)\n"
+                "  11. PROD-011: Roasted Hazelnuts 1kg (Nuts & Butters)\n"
+                "  12. PROD-012: Organic Acai Powder 100g (Superfoods & Cooking)\n\n"
+                "Strict Anti-Smell & Socratic Governance Rules (Zero-Facade Standard):\n"
+                "1. OUT-OF-DOMAIN REJECTIONS:\n"
+                "   - If the user query requests entities completely unrelated to eCommerce data analytics (e.g. 'who is president', 'weather', 'tesla', 'apple iphone', 'stock price', 'joke'), mark is_out_of_domain=true with rejection_reason in English.\n"
+                "   - If the user query asks for product origins outside European eCommerce operations (e.g. 'Taiwanese products', 'US products', 'Japan products'), mark is_out_of_domain=true with an English explanation:\n"
+                "     'The KoRo lakehouse catalog only contains 12 European nut/dried-fruit SKUs, and customers are based in 3 European markets (DE, AT, FR). No external regions exist in the database. In accordance with the Zero-Facade standard, the system rejects synthesizing non-existent entities.'\n\n"
+                "2. SMART GEOGRAPHIC MARKET CLARIFICATION:\n"
+                "   - In eCommerce, business users often say 'German products revenue', 'Spain product revenue', 'European country revenue', or 'market revenue'.\n"
+                "   - Products do NOT have manufacturing origin_country, BUT dim_customers HAS physical customer market_country: DE, AT, FR.\n"
+                "   - When the user mentions European countries, country revenue, or specific European markets:\n"
+                "     DO NOT FLATLY REJECT! Instead, guide the user via Socratic Clarification in English:\n"
+                "     * set is_out_of_domain=false, needs_clarification=true\n"
+                "     * add a question with dimension_type='geographic':\n"
+                "       question_id: 'geographic'\n"
+                "       title: 'Market Geographic Intent Resolution'\n"
+                f"       explanation: 'Lakehouse schema reflection complete: Products do not have manufacturing origins, but customer database contains {len(markets_grounded)} European operational markets ({market_list_str}). Which customer market revenue would you like to analyze?'\n"
+                "       options:\n"
+                "         - id: 'DE', label: '🇩🇪 German Market Customer Orders & Revenue (DE)', value: 'DE'\n"
+                "         - id: 'AT', label: '🇦🇹 Austrian Market Customer Orders & Revenue (AT)', value: 'AT'\n"
+                "         - id: 'FR', label: '🇫🇷 French Market Customer Orders & Revenue (FR)', value: 'FR'\n"
+                "         - id: 'ALL_EU', label: '🇪🇺 All 3 European Markets Combined (ALL_EU)', value: 'ALL_EU'\n\n"
+                "3. PRODUCT CATALOG / INVENTORY INQUIRIES:\n"
+                "   - If user asks about the product catalog size or list (e.g. 'how many products', 'catalog list', 'list products'):\n"
+                "     * set is_out_of_domain=false, needs_clarification=false\n"
+                "     * locked_decisions: {'grain': 'catalog_summary'}\n\n"
+                "4. TEMPORAL BOUNDARY & EXCEEDED WATERMARK:\n"
+                f"   - Physical lakehouse transaction watermark is strictly {watermark['min_date']} to {watermark['max_date']} (months: 2026-08, 2026-09, 2026-10).\n"
+                "   - If the user asks for months outside this watermark (e.g. 'April', 'June', 'November / Black Friday', 'December'):\n"
+                "     DO NOT SILENTLY DEFAULT! Add a 'temporal' clarification question in English:\n"
+                "     * question_id: 'temporal'\n"
+                "     * dimension_type: 'temporal'\n"
+                "     * title: 'Temporal Watermark & Date Range Scope'\n"
+                f"     * explanation: 'Physical lakehouse transaction watermark spans {watermark['min_date']} to {watermark['max_date']} (latest month is {watermark['current_month']}). The requested period is not available. Would you like to adjust to an existing lakehouse period?'\n"
+                "     * options:\n"
+                "       - id: '2026-10-01:2026-10-31', label: '📅 October 2026 (Latest Full Month - Recommended)', value: '2026-10-01:2026-10-31'\n"
+                "       - id: '2026-09-01:2026-09-30', label: '📅 September 2026', value: '2026-09-01:2026-09-30'\n"
+                "       - id: '2026-08-03:2026-08-31', label: '📅 August 2026', value: '2026-08-03:2026-08-31'\n"
+                f"       - id: '{watermark['min_date']}:{watermark['max_date']}', label: '📊 Full Lakehouse Period ({watermark['min_date']} to {watermark['max_date']})', value: '{watermark['min_date']}:{watermark['max_date']}'\n\n"
+                "5. PROMOTIONS & VOUCHERS:\n"
+                "   - If user asks about promotions, vouchers, discounts, or promotional orders:\n"
+                "     * locked_decisions['grain'] = 'promotions_vouchers'\n\n"
+                "6. TEMPORAL & GRAIN AMBIGUITY:\n"
+                "   - Temporal: If relative terms ('this month', 'recent', 'current month') are used, add a 'temporal' question in English.\n"
+                "   - Grain: If returns/refunds are mentioned without specifying grain, add a 'grain' question in English:\n"
+                "     * title: 'Analysis Grain & Entity Routing'\n"
+                "     * explanation: 'Please specify the target aggregation grain:'\n"
+                "     * options: [{'id': 'return_event', 'label': 'Return Event Logs (Grain: Event) (Recommended)', 'value': 'return_event'}, {'id': 'sku_summary', 'label': 'Product SKU Aggregation (Grain: SKU Summary)', 'value': 'sku_summary'}]\n"
+                "   - If completely unambiguous, set needs_clarification=false.\n\n"
+                "Output strictly valid JSON conforming to this schema:\n"
+                "{\n"
+                "  \"is_out_of_domain\": bool,\n"
+                "  \"rejection_reason\": str,\n"
+                "  \"needs_clarification\": bool,\n"
+                "  \"questions\": [\n"
+                "    {\n"
+                "      \"question_id\": str,\n"
+                "      \"dimension_type\": \"temporal\" | \"grain\" | \"geographic\",\n"
+                "      \"title\": str,\n"
+                "      \"explanation\": str,\n"
+                "      \"options\": [{\"id\": str, \"label\": str, \"value\": str}]\n"
+                "    }\n"
+                "  ],\n"
+                "  \"locked_decisions\": {\"grain\": str, \"temporal\": str, \"geographic\": str}\n"
+                "}"
+            )
+        else:
+            system_instruction = (
+                "You are the senior Analytics Engineering AI Copilot for the KoRo Lakehouse Platform.\n"
+                "Your mission is to evaluate stakeholder inquiries against the physical lakehouse schema, determine domain validity, clarify ambiguities, or strictly reject out-of-domain requests before dbt model compilation.\n\n"
+                "Conformed Lakehouse Metadata & Schema Grounding:\n"
+                "- Warehouse Engine: DuckDB in-process OLAP (main_silver, main_gold).\n"
+                "- Conformed Kimball Silver Tables & Columns:\n"
+                "  * dim_products (product_id, product_name, category_id, cost_eur, packaging_size, packaging_type, is_active)\n"
+                "  * dim_categories (category_id, category_name)\n"
+                "  * dim_customers (customer_id, market_country, customer_segment)\n"
+                "  * fct_orders (order_id, customer_id, order_date, voucher_code, voucher_discount_eur, order_gross_eur, order_net_eur, is_returned)\n"
+                "  * fct_order_items (order_item_id, order_id, product_id, quantity, unit_price_eur, line_total_eur)\n"
+                "  * fct_returns (return_id, order_id, product_id, return_date, return_reason, refunded_eur, is_damaged_packaging)\n"
+                f"- Physical Date Watermarks: Data spans {watermark['min_date']} to {watermark['max_date']}. Latest physical month is {watermark['current_month']} ({watermark['current_month_start']} to {watermark['current_month_end']}).\n"
+                f"- Physical Customer European Sales Markets in Database: {market_list_str} (DE=Germany, AT=Austria, FR=France).\n"
+                "- Official Product Catalog (Only these 12 core SKUs exist in this warehouse):\n"
+                "  1. PROD-001: Organic Cashew Nuts Broken 1kg (Nuts & Butters)\n"
+                "  2. PROD-002: Freeze-Dried Strawberries 100g (Dried Fruits)\n"
+                "  3. PROD-003: Organic Deglet Nour Dates 1kg (Dried Fruits)\n"
+                "  4. PROD-004: Natural Almond Butter 500g (Nuts & Butters)\n"
+                "  5. PROD-005: Organic Chia Seeds 1kg (Superfoods & Cooking)\n"
+                "  6. PROD-006: Dried Mango Slices Brooks 500g (Dried Fruits)\n"
+                "  7. PROD-007: Organic Peanut Butter Crunchy 1kg (Nuts & Butters)\n"
+                "  8. PROD-008: Protein Bar Chocolate Brownie 12x60g (Snacks & Bars)\n"
+                "  9. PROD-009: Organic Coconut Flour 1kg (Superfoods & Cooking)\n"
+                "  10. PROD-010: Walnuts Halves 1kg (Nuts & Butters)\n"
+                "  11. PROD-011: Roasted Hazelnuts 1kg (Nuts & Butters)\n"
+                "  12. PROD-012: Organic Acai Powder 100g (Superfoods & Cooking)\n\n"
+                "Strict Anti-Smell & Socratic Governance Rules (Zero-Facade Standard):\n"
+                "1. OUT-OF-DOMAIN REJECTIONS:\n"
+                "   - If the user query requests entities completely unrelated to eCommerce data analytics (e.g. 'who is president', 'weather / 天氣', 'tesla / 特斯拉', 'apple iphone', 'stock price', 'joke'), mark is_out_of_domain=true.\n"
+                "   - If the user query asks for product origins from regions entirely outside European eCommerce operations (e.g. 'Taiwanese products / 台灣產品', 'US products', 'Japan products'), mark is_out_of_domain=true with a professional explanation:\n"
+                "     'KoRo 湖倉現有型錄僅包含 12 款歐洲堅果果乾 SKU，且顧客市場僅涵蓋歐洲 3 國 (DE, AT, FR)，無台灣/美國等外部產地資料。依 Zero-Facade 規範，系統拒絕合成不存在的指標模型。'\n\n"
+                "2. SMART GEOGRAPHIC MARKET CLARIFICATION (智慧地理市場引導):\n"
+                "   - In eCommerce, business users often say 'German products revenue', 'Spain product revenue', '歐洲國家商品的 REVENUE', or 'country revenue'.\n"
+                "   - Products do NOT have manufacturing origin_country, BUT dim_customers HAS physical customer market_country: DE, AT, FR.\n"
+                "   - When the user mentions European countries, country revenue, or specific European countries (e.g. 'German', 'Germany', '德國', 'Austria', '奧地利', 'France', '法國', 'Spain', '西班牙', '歐洲國家', '歐洲', '市場', '國別'):\n"
+                "     DO NOT FLATLY REJECT! Instead, guide the user via Socratic Clarification:\n"
+                "     * set is_out_of_domain=false, needs_clarification=true\n"
+                "     * add a question with dimension_type='geographic':\n"
+                "       question_id: 'geographic'\n"
+                "       title: '地理市場維度動態解析 (Market Geographic Intent Resolution)'\n"
+                f"       explanation: '系統已探查實體湖倉：商品維度未設產地，但顧客資料庫中真實記錄了 {len(markets_grounded)} 個歐洲營運市場 ({market_list_str})。請問您希望分析哪一個市場的顧客營收？'\n"
+                "       options:\n"
+                "         - id: 'DE', label: '🇩🇪 德國市場顧客訂單營收 (Germany - DE)', value: 'DE'\n"
+                "         - id: 'AT', label: '🇦🇹 奧地利市場顧客訂單營收 (Austria - AT)', value: 'AT'\n"
+                "         - id: 'FR', label: '🇫🇷 法國市場顧客訂單營收 (France - FR)', value: 'FR'\n"
+                "         - id: 'ALL_EU', label: '🇪🇺 全歐洲 3 國合併營收 (All European Markets)', value: 'ALL_EU'\n\n"
+                "3. LANGUAGE & LOCALIZATION:\n"
+                "   - If user inquiry is in English, output question titles, explanations, and options strictly in professional English.\n"
+                "   - If user inquiry is in Chinese, output in Traditional Chinese (繁體中文).\n\n"
+                "4. PRODUCT CATALOG / INVENTORY INQUIRIES:\n"
+                "   - If user asks about the product catalog size or list (e.g. '我有多少產品', '有多少商品', 'how many products', 'catalog list', 'list products'):\n"
+                "     * set is_out_of_domain=false, needs_clarification=false\n"
+                "     * locked_decisions: {'grain': 'catalog_summary'}\n\n"
+                "5. TEMPORAL BOUNDARY & EXCEEDED WATERMARK:\n"
+                f"   - Physical lakehouse transaction watermark is strictly {watermark['min_date']} to {watermark['max_date']} (months: 2026-08, 2026-09, 2026-10).\n"
+                "   - If the user asks for months outside this watermark (e.g. '4月 / April', '6月 / June', '11月 / November / Black Friday', '12月 / December'):\n"
+                "     DO NOT SILENTLY DEFAULT TO OCTOBER! Instead, add a 'temporal' clarification question:\n"
+                "     * question_id: 'temporal'\n"
+                "     * dimension_type: 'temporal'\n"
+                "     * title: '時間範圍超出實體水浮標記 (Temporal Watermark Exceeded)' (or in English if query in English)\n"
+                f"     * explanation: '系統實體湖倉水位範圍為 {watermark['min_date']} 至 {watermark['max_date']} (最新月份為 2026-10)。您所查詢的期間尚未發生或無歷史資料。請問您希望將時間範圍調整至實體數據庫內已存在的月份？'\n"
+                "     * options:\n"
+                "       - id: '2026-10-01:2026-10-31', label: '📅 檢視已載入之最近月份 2026 年 10 月數據 (推薦)', value: '2026-10-01:2026-10-31'\n"
+                "       - id: '2026-09-01:2026-09-30', label: '📅 檢視 2026 年 9 月數據', value: '2026-09-01:2026-09-30'\n"
+                "       - id: '2026-08-03:2026-08-31', label: '📅 檢視 2026 年 8 月數據', value: '2026-08-03:2026-08-31'\n"
+                f"       - id: '{watermark['min_date']}:{watermark['max_date']}', label: '📊 檢視湖倉全期數據 ({watermark['min_date']} 至 {watermark['max_date']})', value: '{watermark['min_date']}:{watermark['max_date']}'\n\n"
+                "6. PROMOTIONS & VOUCHERS:\n"
+                "   - If user asks about promotions, vouchers, discounts, or promotional orders (e.g. '促銷', '折價券', '折扣', 'voucher', 'discount', '促銷訂單量', 'black friday'):\n"
+                "     * locked_decisions['grain'] = 'promotions_vouchers'\n\n"
+                "7. TEMPORAL & GRAIN AMBIGUITY:\n"
+                "   - Temporal: If relative terms ('這個月', '本月', '最近', 'this month', 'recent') are used, add a 'temporal' question.\n"
+                "   - Grain: If returns/refunds are mentioned without specifying grain, add a 'grain' question.\n"
+                "   - If completely unambiguous and no clarification needed, set needs_clarification=false.\n\n"
+                "Output strictly valid JSON conforming to this schema:\n"
+                "{\n"
+                "  \"is_out_of_domain\": bool,\n"
+                "  \"rejection_reason\": str,\n"
+                "  \"needs_clarification\": bool,\n"
+                "  \"questions\": [\n"
+                "    {\n"
+                "      \"question_id\": str,\n"
+                "      \"dimension_type\": \"temporal\" | \"grain\" | \"geographic\",\n"
+                "      \"title\": str,\n"
+                "      \"explanation\": str,\n"
+                "      \"options\": [{\"id\": str, \"label\": str, \"value\": str}]\n"
+                "    }\n"
+                "  ],\n"
+                "  \"locked_decisions\": {\"grain\": str, \"temporal\": str, \"geographic\": str}\n"
+                "}"
+            )
 
         import time
         models_to_try = [
@@ -261,6 +361,67 @@ def _call_gemini_socratic(
                                     selected_option_id=opts[0].get("id"),
                                 )
                             )
+
+                    if is_en is True:
+                        if is_chinese_text(rej_reason):
+                            rej_reason = "Inquiry is out of analytical domain for the KoRo lakehouse platform."
+                        cleaned_qs = []
+                        for q in qs:
+                            t = q.title
+                            e = q.explanation
+                            dim = q.dimension_type
+                            if is_chinese_text(t) or is_chinese_text(e):
+                                if dim == "temporal":
+                                    t = "Temporal Scope & Date Range Resolution"
+                                    e = f"Physical lakehouse watermark spans {watermark['min_date']} to {watermark['max_date']} (latest full month: {watermark['current_month']}). Please select an available historical period:"
+                                elif dim == "geographic":
+                                    t = "Market Geographic Intent Resolution"
+                                    e = f"Lakehouse customer database contains {len(markets_grounded)} European operational markets ({market_list_str}). Which customer market revenue would you like to analyze?"
+                                elif dim == "grain":
+                                    t = "Analysis Grain & Entity Routing"
+                                    e = "Please specify the target aggregation grain:"
+                                else:
+                                    t = re.sub(r"[\u4e00-\u9fff\uff00-\uffef]+", "", t).strip(" :()-") or "Clarification Required"
+                                    e = re.sub(r"[\u4e00-\u9fff\uff00-\uffef]+", "", e).strip(" :()-") or "Please select an option below:"
+
+                            clean_opts = []
+                            for opt in q.options:
+                                lbl = opt.get("label", "")
+                                val = opt.get("value", "")
+                                if is_chinese_text(lbl):
+                                    val_str = str(val)
+                                    if "2026-10" in val_str:
+                                        lbl = "📅 October 2026 (Latest Full Month - Recommended)"
+                                    elif "2026-09" in val_str:
+                                        lbl = "📅 September 2026"
+                                    elif "2026-08" in val_str:
+                                        lbl = "📅 August 2026"
+                                    elif f"{watermark['min_date']}" in val_str and f"{watermark['max_date']}" in val_str:
+                                        lbl = f"📊 Full Lakehouse Period ({watermark['min_date']} to {watermark['max_date']})"
+                                    elif val_str == "DE":
+                                        lbl = "🇩🇪 German Market Customer Orders & Revenue (DE)"
+                                    elif val_str == "AT":
+                                        lbl = "🇦🇹 Austrian Market Customer Orders & Revenue (AT)"
+                                    elif val_str == "FR":
+                                        lbl = "🇫🇷 French Market Customer Orders & Revenue (FR)"
+                                    elif val_str == "ALL_EU":
+                                        lbl = "🇪🇺 All 3 European Markets Combined (ALL_EU)"
+                                    elif val_str in ["return_event", "sku_summary"]:
+                                        lbl = "Return Event Logs (Grain: Event) (Recommended)" if val_str == "return_event" else "Product SKU Aggregation (Grain: SKU Summary)"
+                                    else:
+                                        lbl = re.sub(r"[\u4e00-\u9fff\uff00-\uffef]+", "", lbl).strip(" :()-") or str(val)
+                                clean_opts.append({"id": opt.get("id"), "label": lbl, "value": val})
+                            cleaned_qs.append(
+                                SocraticClarificationQuestion(
+                                    question_id=q.question_id,
+                                    dimension_type=q.dimension_type,
+                                    title=t,
+                                    explanation=e,
+                                    options=clean_opts,
+                                    selected_option_id=clean_opts[0]["id"] if clean_opts else None,
+                                )
+                            )
+                        qs = cleaned_qs
 
                     locked = parsed.get("locked_decisions", {})
                     return SocraticSessionState(
@@ -340,8 +501,10 @@ def extract_temporal_intent(
 def _deterministic_offline_socratic_analysis(
     goal_clean: str,
     watermark: dict[str, Any],
+    is_en: bool | None = None,
 ) -> SocraticSessionState:
     """Deterministic lakehouse grounding fallback reserved strictly for unit test suites."""
+    is_en_mode = is_en is True
     lower_goal = goal_clean.lower()
 
     # 1. Product Catalog / SKU Count Inquiries
@@ -360,13 +523,15 @@ def _deterministic_offline_socratic_analysis(
 
     matched_scenario, scenario_title = classify_schema_intent(goal_clean)
     if matched_scenario is None:
+        rej = (
+            f"Input '{goal_clean}' is out of analytical domain. Please specify commercial metrics related to orders, returns, packaging defects, or margins."
+            if is_en_mode
+            else f"輸入「{goal_clean}」超出湖倉分析範疇。請指定與訂單銷售、商品退貨、品類毛利或規格破損相關的商業指標。"
+        )
         return SocraticSessionState(
             user_goal=goal_clean,
             is_out_of_domain=True,
-            rejection_reason=(
-                f"輸入「{goal_clean}」超出湖倉分析範疇。"
-                "請指定與訂單銷售、商品退貨、品類毛利或規格破損相關的商業指標。"
-            ),
+            rejection_reason=rej,
         )
 
     questions: list[SocraticClarificationQuestion] = []
@@ -388,20 +553,29 @@ def _deterministic_offline_socratic_analysis(
         elif any(k in lower_goal for k in ["歐洲", "european", "all"]):
             pref_id = "ALL_EU"
 
-        market_opts = [
-            {"id": "DE", "label": "🇩🇪 德國市場顧客訂單營收 (Germany - DE)", "value": "DE"},
-            {"id": "AT", "label": "🇦🇹 奧地利市場顧客訂單營收 (Austria - AT)", "value": "AT"},
-            {"id": "FR", "label": "🇫🇷 法國市場顧客訂單營收 (France - FR)", "value": "FR"},
-            {"id": "ALL_EU", "label": "🇪🇺 全歐洲 3 國合併營收 (All European Markets)", "value": "ALL_EU"},
-        ]
+        if is_en_mode:
+            market_opts = [
+                {"id": "DE", "label": "🇩🇪 German Market Customer Orders & Revenue (DE)", "value": "DE"},
+                {"id": "AT", "label": "🇦🇹 Austrian Market Customer Orders & Revenue (AT)", "value": "AT"},
+                {"id": "FR", "label": "🇫🇷 French Market Customer Orders & Revenue (FR)", "value": "FR"},
+                {"id": "ALL_EU", "label": "🇪🇺 All 3 European Markets Combined (ALL_EU)", "value": "ALL_EU"},
+            ]
+        else:
+            market_opts = [
+                {"id": "DE", "label": "🇩🇪 德國市場顧客訂單營收 (Germany - DE)", "value": "DE"},
+                {"id": "AT", "label": "🇦🇹 奧地利市場顧客訂單營收 (Austria - AT)", "value": "AT"},
+                {"id": "FR", "label": "🇫🇷 法國市場顧客訂單營收 (France - FR)", "value": "FR"},
+                {"id": "ALL_EU", "label": "🇪🇺 全歐洲 3 國合併營收 (All European Markets)", "value": "ALL_EU"},
+            ]
         active_mkts = watermark.get("active_markets", ["DE", "AT", "FR"])
         q_geo = SocraticClarificationQuestion(
             question_id="geographic",
             dimension_type="geographic",
-            title="地理市場維度動態解析 (Market Geographic Intent Resolution)",
+            title="Market Geographic Intent Resolution" if is_en_mode else "地理市場維度動態解析 (Market Geographic Intent Resolution)",
             explanation=(
-                f"湖倉實體庫探查完畢：目前顧客維度真實具備 {len(active_mkts)} 個歐洲市場國別（{', '.join(active_mkts)}）。"
-                "商品維度未設產地，請問您希望分析哪一個市場的顧客訂單營收？"
+                f"Lakehouse schema reflection complete: Customer dimension contains {len(active_mkts)} European operational markets ({', '.join(active_mkts)}). Which customer market revenue would you like to analyze?"
+                if is_en_mode
+                else f"湖倉實體庫探查完畢：目前顧客維度真實具備 {len(active_mkts)} 個歐洲市場國別（{', '.join(active_mkts)}）。商品維度未設產地，請問您希望分析哪一個市場的顧客訂單營收？"
             ),
             options=market_opts,
             selected_option_id=pref_id,
@@ -416,15 +590,31 @@ def _deterministic_offline_socratic_analysis(
     has_relative_temporal = any(t in lower_goal for t in relative_tokens)
 
     if is_exceeded:
-        q_temp = SocraticClarificationQuestion(
-            question_id="temporal",
-            dimension_type="temporal",
-            title="時間範圍超出實體水浮標記 (Temporal Watermark Exceeded)",
-            explanation=(
-                f"系統實體湖倉水位範圍為 {watermark['min_date']} 至 {watermark['max_date']} (最新月份為 {watermark['current_month']})。"
-                f"您所查詢的「{time_label}」尚未發生或無歷史實體資料。請問您希望將時間範圍調整至實體數據庫內已存在的月份？"
-            ),
-            options=[
+        if is_en_mode:
+            temp_opts = [
+                {
+                    "id": "2026-10-01:2026-10-31",
+                    "label": "📅 October 2026 (Latest Full Month - Recommended)",
+                    "value": f"{watermark['current_month_start']}:{watermark['current_month_end']}",
+                },
+                {
+                    "id": "2026-09-01:2026-09-30",
+                    "label": "📅 September 2026",
+                    "value": "2026-09-01:2026-09-30",
+                },
+                {
+                    "id": "2026-08-03:2026-08-31",
+                    "label": "📅 August 2026",
+                    "value": f"{watermark['min_date']}:2026-08-31",
+                },
+                {
+                    "id": f"{watermark['min_date']}:{watermark['max_date']}",
+                    "label": f"📊 Full Lakehouse Period ({watermark['min_date']} to {watermark['max_date']})",
+                    "value": f"{watermark['min_date']}:{watermark['max_date']}",
+                },
+            ]
+        else:
+            temp_opts = [
                 {
                     "id": "2026-10-01:2026-10-31",
                     "label": f"📅 檢視已載入之最近月份 2026 年 10 月數據 (推薦)",
@@ -445,20 +635,36 @@ def _deterministic_offline_socratic_analysis(
                     "label": f"📊 檢視湖倉全期數據 ({watermark['min_date']} 至 {watermark['max_date']})",
                     "value": f"{watermark['min_date']}:{watermark['max_date']}",
                 },
-            ],
+            ]
+        q_temp = SocraticClarificationQuestion(
+            question_id="temporal",
+            dimension_type="temporal",
+            title="Temporal Watermark & Date Range Scope" if is_en_mode else "時間範圍超出實體水浮標記 (Temporal Watermark Exceeded)",
+            explanation=(
+                f"Physical lakehouse transaction watermark spans {watermark['min_date']} to {watermark['max_date']} (latest month: {watermark['current_month']}). The requested period is not available. Please select an available historical period:"
+                if is_en_mode
+                else f"系統實體湖倉水位範圍為 {watermark['min_date']} 至 {watermark['max_date']} (最新月份為 {watermark['current_month']})。您所查詢的「{time_label}」尚未發生或無歷史實體資料。請問您希望將時間範圍調整至實體數據庫內已存在的月份？"
+            ),
+            options=temp_opts,
             selected_option_id="2026-10-01:2026-10-31",
         )
         questions.append(q_temp)
     elif has_relative_temporal:
-        q_temp = SocraticClarificationQuestion(
-            question_id="temporal",
-            dimension_type="temporal",
-            title="時間意圖動態解析 (Temporal Intent Resolution)",
-            explanation=(
-                f"偵測到時間關鍵字：當前湖倉最新資料水位為 {watermark['current_month']}。"
-                f"請問分析區間是否鎖定為此月份？"
-            ),
-            options=[
+        if is_en_mode:
+            rel_opts = [
+                {
+                    "id": "current_month",
+                    "label": f"Lock to Current Month ({watermark['current_month_start']} ~ {watermark['current_month_end']}) (Recommended)",
+                    "value": f"{watermark['current_month_start']}:{watermark['current_month_end']}",
+                },
+                {
+                    "id": "rolling_30",
+                    "label": f"Rolling 30-Day Window ({watermark['rolling_30_start']} ~ {watermark['rolling_30_end']})",
+                    "value": f"{watermark['rolling_30_start']}:{watermark['rolling_30_end']}",
+                },
+            ]
+        else:
+            rel_opts = [
                 {
                     "id": "current_month",
                     "label": f"鎖定當月 ({watermark['current_month_start']} ~ {watermark['current_month_end']}) (推薦)",
@@ -469,7 +675,17 @@ def _deterministic_offline_socratic_analysis(
                     "label": f"最近 30 天滾動區間 ({watermark['rolling_30_start']} ~ {watermark['rolling_30_end']})",
                     "value": f"{watermark['rolling_30_start']}:{watermark['rolling_30_end']}",
                 },
-            ],
+            ]
+        q_temp = SocraticClarificationQuestion(
+            question_id="temporal",
+            dimension_type="temporal",
+            title="Temporal Scope Resolution" if is_en_mode else "時間意圖動態解析 (Temporal Intent Resolution)",
+            explanation=(
+                f"Relative keyword detected: Lakehouse data watermark is currently {watermark['current_month']}. Please confirm your target time window:"
+                if is_en_mode
+                else f"偵測到時間關鍵字：當前湖倉最新資料水位為 {watermark['current_month']}。請問分析區間是否鎖定為此月份？"
+            ),
+            options=rel_opts,
             selected_option_id="current_month",
         )
         questions.append(q_temp)
@@ -492,12 +708,21 @@ def _deterministic_offline_socratic_analysis(
     if has_promo_intent:
         locked_decisions["grain"] = "promotions_vouchers"
     elif has_record_intent and "return" in matched_scenario:
-        q_grain = SocraticClarificationQuestion(
-            question_id="grain",
-            dimension_type="grain",
-            title="查詢粒度與實體路由 (Grain & Entity Routing)",
-            explanation="您需要查詢的是『產品退款紀錄』，請問您預期的資料粒度是？",
-            options=[
+        if is_en_mode:
+            grain_opts = [
+                {
+                    "id": "return_event",
+                    "label": "Return Event Logs (Grain: Order Return Events with reason, refund, SKU) (Recommended)",
+                    "value": "return_event",
+                },
+                {
+                    "id": "sku_summary",
+                    "label": "Product SKU Aggregation (Grain: Product SKU Summary)",
+                    "value": "sku_summary",
+                },
+            ]
+        else:
+            grain_opts = [
                 {
                     "id": "return_event",
                     "label": "退款事件明細流水 (Grain: Return Event Log，包含退款單號、原因、金額、商品) (推薦)",
@@ -508,7 +733,13 @@ def _deterministic_offline_socratic_analysis(
                     "label": "各商品退款總額彙總 (Grain: Product SKU 彙總)",
                     "value": "sku_summary",
                 },
-            ],
+            ]
+        q_grain = SocraticClarificationQuestion(
+            question_id="grain",
+            dimension_type="grain",
+            title="Analysis Grain & Entity Routing" if is_en_mode else "查詢粒度與實體路由 (Grain & Entity Routing)",
+            explanation="Please specify the target aggregation grain for this inquiry:" if is_en_mode else "您需要查詢的是『產品退款紀錄』，請問您預期的資料粒度是？",
+            options=grain_opts,
             selected_option_id="return_event",
         )
         questions.append(q_grain)
@@ -534,6 +765,7 @@ def analyze_socratic_inquiry(
     user_goal: str,
     reflection: DatabaseReflectionService | None = None,
     api_key: str = "",
+    is_en: bool | None = None,
 ) -> SocraticSessionState:
     """Inspect user goal for domain validity and clarify ambiguities via Gemini GenAI.
 
@@ -542,11 +774,14 @@ def analyze_socratic_inquiry(
     - If no Gemini API Key is detected in live runtime, strictly reject the inquiry.
     """
     goal_clean = (user_goal or "").strip()
+    is_en_mode = is_en is True
+
     if not goal_clean:
+        rej = "Please enter an analytical goal or click one of the preset scenario buttons." if is_en_mode else "請輸入具體的分析目標或點擊上方預設問題按鈕。"
         return SocraticSessionState(
             user_goal="",
             is_out_of_domain=True,
-            rejection_reason="請輸入具體的分析目標或點擊上方預設問題按鈕。",
+            rejection_reason=rej,
         )
 
     watermark = get_lakehouse_watermark(reflection)
@@ -571,44 +806,50 @@ def analyze_socratic_inquiry(
     if not effective_key:
         if not is_pytest:
             # LIVE RUNTIME: Strictly reject under Zero-Facade Standard
+            rej_key = (
+                "🔒 Gemini API Key Required: Under the Zero-Facade standard, simulated responses and local keyword bypasses are disabled. Please provide your Gemini API Key in the left sidebar to enable live analysis."
+                if is_en_mode
+                else "🔒 未檢測到 Gemini API Key：系統已全面遵循 Zero-Facade 生產標準，嚴禁以本機關鍵字或模擬腳本兜圈回答。請在左側側邊欄填入 Gemini API Key 以啟用即時分析。"
+            )
             return SocraticSessionState(
                 user_goal=goal_clean,
                 is_out_of_domain=True,
                 is_api_key_missing=True,
-                rejection_reason=(
-                    "🔒 未檢測到 Gemini API Key：系統已全面遵循 Zero-Facade 生產標準，"
-                    "嚴禁以本機關鍵字或模擬腳本兜圈回答。請在左側側邊欄填入 Gemini API Key 以啟用即時分析。"
-                ),
+                rejection_reason=rej_key,
             )
         else:
             # PYTEST / OFFLINE CI ENVIRONMENT ONLY:
             # Check negative domain constraints first
             lower_goal = goal_clean.lower()
             if any(term in lower_goal for term in ["taiwan", "台灣", "weather", "天氣", "威爾", "who is", "president", "總統"]):
+                rej_term = (
+                    f"Input '{goal_clean}' is out of analytical domain. KoRo catalog only contains 12 European SKUs with no Taiwan or origin data."
+                    if is_en_mode
+                    else f"輸入「{goal_clean}」超出湖倉分析範疇。KoRo 型錄僅包含歐洲堅果與果乾等 12 款實體 SKU，且維度表無產地國別 (origin_country) 或台灣產品資料。"
+                )
                 return SocraticSessionState(
                     user_goal=goal_clean,
                     is_out_of_domain=True,
-                    rejection_reason=(
-                        f"輸入「{goal_clean}」超出湖倉分析範疇。"
-                        "KoRo 型錄僅包含歐洲堅果與果乾等 12 款實體 SKU，且維度表無產地國別 (origin_country) 或台灣產品資料。"
-                    ),
+                    rejection_reason=rej_term,
                 )
-            return _deterministic_offline_socratic_analysis(goal_clean, watermark)
+            return _deterministic_offline_socratic_analysis(goal_clean, watermark, is_en=is_en)
 
     # 2. Direct Gemini LLM Invocation
-    gemini_result, err = _call_gemini_socratic(goal_clean, watermark, effective_key)
+    gemini_result, err = _call_gemini_socratic(goal_clean, watermark, effective_key, is_en=is_en)
     if gemini_result is not None:
         return gemini_result
 
     # 3. Handle Gemini API Call Failure (Never silently fall back to keyword matching!)
+    rej_fail = (
+        f"⚠️ Gemini API Error: {err or 'Connection timeout or quota exceeded'}. Under Zero-Facade standards, fallback to simulation is prohibited. Please check your API Key or network connection."
+        if is_en_mode
+        else f"⚠️ Gemini API 調用異常：{err or '連線超時或配額限制'}。依 Zero-Facade 標準，系統拒絕回退至模擬運算，請檢查 API Key 或網路連線。"
+    )
     return SocraticSessionState(
         user_goal=goal_clean,
         is_out_of_domain=True,
-        error_message=err or "Gemini API 調用失敗",
-        rejection_reason=(
-            f"⚠️ Gemini API 調用異常：{err or '連線超時或配額限制'}。"
-            "依 Zero-Facade 標準，系統拒絕回退至模擬運算，請檢查 API Key 或網路連線。"
-        ),
+        error_message=err or ("Gemini API Call Failed" if is_en_mode else "Gemini API 調用失敗"),
+        rejection_reason=rej_fail,
     )
 
 
@@ -1702,6 +1943,7 @@ def chat_socratic_turn(
     user_goal: str = "",
     reflection: DatabaseReflectionService | None = None,
     api_key: str = "",
+    is_en: bool | None = None,
 ) -> str:
     """Provide contextual Analytics Engineering domain advice for an inquiry turn.
 
@@ -1710,8 +1952,11 @@ def chat_socratic_turn(
     - Ground advice in physical Lakehouse entities (dim_products, fct_orders, fct_order_items, fct_returns).
     """
     msg_clean = (user_message or "").strip()
+    if is_en is None:
+        is_en = not is_chinese_text(user_goal + " " + user_message)
+
     if not msg_clean:
-        return "請輸入您想深入探討或補充的分析細節。"
+        return "Please enter additional analytical requirements or context." if is_en else "請輸入您想深入探討或補充的分析細節。"
 
     watermark = get_lakehouse_watermark(reflection)
     effective_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
@@ -1722,22 +1967,41 @@ def chat_socratic_turn(
             from google import genai
             from google.genai import types
             client = genai.Client(api_key=effective_key)
-            system_instruction = (
-                "You are the KoRo Lakehouse Lead Analytics Engineer and Socratic Copilot.\n"
-                "Your role is to converse with business stakeholders, answer questions about analytical dimensions, "
-                "metrics, and data availability, and guide them in formulating precise requirements.\n\n"
-                "Physical Lakehouse Facts & Dimensions:\n"
-                "- dim_products: product_id, product_name, category_id, category_name, packaging_size, unit_price_eur, unit_cost_eur, stock_on_hand, is_available. (12 European nut/dried-fruit SKUs, e.g. 1kg bulk bags vs 500g/250g).\n"
-                "- fct_orders: order_id, order_date, customer_id, market_country, discount_eur, order_gross_eur, order_net_eur.\n"
-                "- fct_order_items: order_item_id, order_id, product_id, quantity_sold, line_gross_eur, line_net_eur, cogs_eur.\n"
-                "- fct_returns: return_id, order_item_id, return_date, return_reason, refund_amount_eur.\n"
-                f"- Physical Watermark: {watermark['min_date']} to {watermark['max_date']}. Active markets: ['DE', 'AT', 'FR'].\n\n"
-                "Rules:\n"
-                "1. Answer in the same language as the user (Traditional Chinese preferred for Chinese queries).\n"
-                "2. Provide constructive suggestions on dimensions (e.g. breaking down by packaging_size or market_country), metrics (unit margins, return rates), or filtering.\n"
-                "3. Do NOT generate executable SQL or dbt code blocks yet. Tell the user what data is available and how it can be modeled.\n"
-                "4. Keep the response concise, professional, and actionable (under 150 words)."
-            )
+            if is_en:
+                system_instruction = (
+                    "You are the KoRo Lakehouse Lead Analytics Engineer and Socratic Copilot.\n"
+                    "Your role is to converse with business stakeholders, answer questions about analytical dimensions, "
+                    "metrics, and data availability, and guide them in formulating precise requirements.\n\n"
+                    "STRICT LANGUAGE RULE: Answer 100% in fluent, professional English. Never output Chinese characters.\n\n"
+                    "Physical Lakehouse Facts & Dimensions:\n"
+                    "- dim_products: product_id, product_name, category_id, category_name, packaging_size, unit_price_eur, unit_cost_eur, stock_on_hand, is_available. (12 European nut/dried-fruit SKUs, e.g. 1kg bulk bags vs 500g/250g).\n"
+                    "- fct_orders: order_id, order_date, customer_id, market_country, discount_eur, order_gross_eur, order_net_eur.\n"
+                    "- fct_order_items: order_item_id, order_id, product_id, quantity_sold, line_gross_eur, line_net_eur, cogs_eur.\n"
+                    "- fct_returns: return_id, order_item_id, return_date, return_reason, refund_amount_eur.\n"
+                    f"- Physical Watermark: {watermark['min_date']} to {watermark['max_date']}. Active markets: ['DE', 'AT', 'FR'].\n\n"
+                    "Rules:\n"
+                    "1. Answer strictly in professional English.\n"
+                    "2. Provide constructive suggestions on dimensions (e.g. breaking down by packaging_size or market_country), metrics (unit margins, return rates), or filtering.\n"
+                    "3. Do NOT generate executable SQL or dbt code blocks yet. Tell the user what data is available and how it can be modeled.\n"
+                    "4. Keep the response concise, professional, and actionable (under 150 words)."
+                )
+            else:
+                system_instruction = (
+                    "You are the KoRo Lakehouse Lead Analytics Engineer and Socratic Copilot.\n"
+                    "Your role is to converse with business stakeholders, answer questions about analytical dimensions, "
+                    "metrics, and data availability, and guide them in formulating precise requirements.\n\n"
+                    "Physical Lakehouse Facts & Dimensions:\n"
+                    "- dim_products: product_id, product_name, category_id, category_name, packaging_size, unit_price_eur, unit_cost_eur, stock_on_hand, is_available. (12 European nut/dried-fruit SKUs, e.g. 1kg bulk bags vs 500g/250g).\n"
+                    "- fct_orders: order_id, order_date, customer_id, market_country, discount_eur, order_gross_eur, order_net_eur.\n"
+                    "- fct_order_items: order_item_id, order_id, product_id, quantity_sold, line_gross_eur, line_net_eur, cogs_eur.\n"
+                    "- fct_returns: return_id, order_item_id, return_date, return_reason, refund_amount_eur.\n"
+                    f"- Physical Watermark: {watermark['min_date']} to {watermark['max_date']}. Active markets: ['DE', 'AT', 'FR'].\n\n"
+                    "Rules:\n"
+                    "1. Answer in the same language as the user (Traditional Chinese preferred for Chinese queries).\n"
+                    "2. Provide constructive suggestions on dimensions (e.g. breaking down by packaging_size or market_country), metrics (unit margins, return rates), or filtering.\n"
+                    "3. Do NOT generate executable SQL or dbt code blocks yet. Tell the user what data is available and how it can be modeled.\n"
+                    "4. Keep the response concise, professional, and actionable (under 150 words)."
+                )
 
             history_context = "\n".join([f"{h.get('role', 'user')}: {h.get('content', '')}" for h in chat_history[-6:]])
             full_prompt = (
@@ -1770,29 +2034,55 @@ def chat_socratic_turn(
 
     # Deterministic offline guidance for tests and local mode
     lower_msg = msg_clean.lower()
-    if any(k in lower_msg for k in ["包裝", "規格", "packaging", "size", "1kg"]):
-        return (
-            "好的！在 `dim_products` 維度中，我們有明確的 `packaging_size` 欄位（例如 1kg 散裝、500g、250g 等）。"
-            "若將分析粒度下鑽至『產品規格與包裝』，我們可以清楚比對大包裝與小包裝在各市場的單價、銷量及退貨率差異。"
-        )
-    elif any(k in lower_msg for k in ["價格", "單價", "price", "彈性", "營收"]):
-        return (
-            "了解！我們可以在事實層 `fct_order_items` 結合 `dim_products.unit_price_eur`，"
-            "計算各產品在扣除折價券前後的平均成交單價與總營收貢獻，觀察不同價格區間對銷量的影響。"
-        )
-    elif any(k in lower_msg for k in ["市場", "國家", "market", "country", "de", "at", "fr"]):
-        return (
-            f"收到！湖倉目前支援的歐洲實體市場為 DE（德國）、AT（奧地利）、FR（法國）。"
-            "我們可以依據市場進行分群，比較不同地區的定價表現與消費者退貨偏好。"
-        )
+    if is_en:
+        if any(k in lower_msg for k in ["packaging", "size", "1kg", "bulk", "包裝", "規格"]):
+            return (
+                "Understood! In `dim_products`, we have the `packaging_size` attribute (e.g. 1kg bulk vs 500g/250g). "
+                "Drilling down into packaging sizes allows comparing unit prices, volume, and return rates across European markets."
+            )
+        elif any(k in lower_msg for k in ["price", "elasticity", "revenue", "價格", "單價", "營收"]):
+            return (
+                "Got it! In `fct_order_items` and `dim_products.unit_price_eur`, we can compute realized average unit prices "
+                "after vouchers and examine gross vs net revenue contribution."
+            )
+        elif any(k in lower_msg for k in ["market", "country", "de", "at", "fr", "市場", "國家"]):
+            return (
+                "Noted! Physical customer markets available in the warehouse are DE (Germany), AT (Austria), and FR (France). "
+                "We can segment the analysis by market to observe regional pricing and return preferences."
+            )
+        else:
+            return (
+                f"Noted your additional requirement: '{msg_clean}'. "
+                "This context will be consolidated into the specification memo. Click 'Summarize' when you are ready to sign off."
+            )
     else:
-        return (
-            f"已記錄您的需求補充：「{msg_clean}」。"
-            "此條件將納入後續的分析需求總結中。若您確認各項條件已齊全，可點擊「總結需求」按鈕生成完整的分析規格書。"
-        )
+        if any(k in lower_msg for k in ["包裝", "規格", "packaging", "size", "1kg"]):
+            return (
+                "好的！在 `dim_products` 維度中，我們有明確的 `packaging_size` 欄位（例如 1kg 散裝、500g、250g 等）。"
+                "若將分析粒度下鑽至『產品規格與包裝』，我們可以清楚比對大包裝與小包裝在各市場的單價、銷量及退貨率差異。"
+            )
+        elif any(k in lower_msg for k in ["價格", "單價", "price", "彈性", "營收"]):
+            return (
+                "了解！我們可以在事實層 `fct_order_items` 結合 `dim_products.unit_price_eur`，"
+                "計算各產品在扣除折價券前後的平均成交單價與總營收貢獻，觀察不同價格區間對銷量的影響。"
+            )
+        elif any(k in lower_msg for k in ["市場", "國家", "market", "country", "de", "at", "fr"]):
+            return (
+                f"收到！湖倉目前支援的歐洲實體市場為 DE（德國）、AT（奧地利）、FR（法國）。"
+                "我們可以依據市場進行分群，比較不同地區的定價表現與消費者退貨偏好。"
+            )
+        else:
+            return (
+                f"已記錄您的需求補充：「{msg_clean}」。"
+                "此條件將納入後續的分析需求總結中。若您確認各項條件已齊全，可點擊「總結需求」按鈕生成完整的分析規格書。"
+            )
 
 
-def _sanitize_and_summarize_advisory_notes(chat_history: list[dict[str, str]], user_goal: str) -> str:
+def _sanitize_and_summarize_advisory_notes(
+    chat_history: list[dict[str, str]],
+    user_goal: str,
+    is_en: bool | None = None,
+) -> str:
     """Intelligently summarize conversation decisions into natural language, purging off-topic noise.
     
     Produces executive-level business statements such as:
@@ -1801,7 +2091,10 @@ def _sanitize_and_summarize_advisory_notes(chat_history: list[dict[str, str]], u
     if not chat_history:
         return ""
 
-    off_topic_indicators = ["柯文哲", "總統", "天氣", "股票", "政治", "笑話", "誰是"]
+    if is_en is None:
+        is_en = not is_chinese_text(user_goal + " " + " ".join([h.get("content", "") for h in chat_history]))
+
+    off_topic_indicators = ["柯文哲", "總統", "天氣", "股票", "政治", "笑話", "誰是", "who is", "president", "weather"]
     valid_user_notes: list[str] = []
 
     for i, h in enumerate(chat_history):
@@ -1810,12 +2103,12 @@ def _sanitize_and_summarize_advisory_notes(chat_history: list[dict[str, str]], u
             if not content:
                 continue
             # Filter explicit off-topic query patterns
-            if any(term in content for term in off_topic_indicators):
+            if any(term in content.lower() for term in off_topic_indicators):
                 continue
             # Check if immediately followed by an out-of-scope assistant response
             if i + 1 < len(chat_history):
                 next_resp = chat_history[i + 1].get("content", "")
-                if "超出" in next_resp and ("範疇" in next_resp or "範圍" in next_resp):
+                if ("超出" in next_resp and ("範疇" in next_resp or "範圍" in next_resp)) or ("out of" in next_resp.lower() and "domain" in next_resp.lower()):
                     continue
             valid_user_notes.append(content)
 
@@ -1824,53 +2117,100 @@ def _sanitize_and_summarize_advisory_notes(chat_history: list[dict[str, str]], u
 
     combined = f"{user_goal} {' '.join(valid_user_notes)}".lower()
 
-    # Dimension extraction
-    mkt = "德國市場 (DE)" if any(w in combined for w in ["德國", "de"]) else (
-        "奧地利市場 (AT)" if any(w in combined for w in ["奧地利", "at"]) else (
-            "法國市場 (FR)" if any(w in combined for w in ["法國", "fr"]) else "歐洲市場"
+    if is_en:
+        # Dimension extraction in English
+        mkt = "German market (DE)" if any(w in combined for w in ["german", "germany", "de", "德國"]) else (
+            "Austrian market (AT)" if any(w in combined for w in ["austria", "at", "奧地利"]) else (
+                "French market (FR)" if any(w in combined for w in ["france", "fr", "法國"]) else "European markets"
+            )
         )
-    )
 
-    # Strict Recency Month Extraction
-    month = ""
-    for note in reversed(valid_user_notes):
-        n_low = note.lower()
-        if any(w in n_low for w in ["9月", "九月", "september"]):
-            month = "9 月份"
-            break
-        elif any(w in n_low for w in ["8月", "八月", "august"]):
-            month = "8 月份"
-            break
-        elif any(w in n_low for w in ["10月", "十月", "october"]):
-            month = "10 月份"
-            break
+        month = ""
+        for note in reversed(valid_user_notes):
+            n_low = note.lower()
+            if any(w in n_low for w in ["9月", "九月", "september"]):
+                month = "September"
+                break
+            elif any(w in n_low for w in ["8月", "八月", "august"]):
+                month = "August"
+                break
+            elif any(w in n_low for w in ["10月", "十月", "october"]):
+                month = "October"
+                break
 
-    items: list[str] = []
-    if any(w in combined for w in ["杏仁", "almond"]):
-        items.append("杏仁")
-    if any(w in combined for w in ["腰果", "cashew"]):
-        items.append("腰果")
-    if items:
-        items_desc = f"{'與'.join(items)}品項"
-    elif "堅果" in combined:
-        items_desc = "堅果類產品"
-    elif "果乾" in combined:
-        items_desc = "果乾類產品"
+        items: list[str] = []
+        if any(w in combined for w in ["almond", "杏仁"]):
+            items.append("almond")
+        if any(w in combined for w in ["cashew", "腰果"]):
+            items.append("cashew")
+        if items:
+            items_desc = f"{' and '.join(items)} items"
+        elif any(w in combined for w in ["nut", "堅果"]):
+            items_desc = "nut products"
+        elif any(w in combined for w in ["fruit", "果乾"]):
+            items_desc = "dried fruit products"
+        else:
+            items_desc = "relevant products"
+
+        metrics_desc = ""
+        if any(w in combined for w in ["voucher", "discount", "realized", "折價券", "折價", "促銷", "實際成交", "牌價"]):
+            metrics_desc = " and calculating realized average selling price after promotional discounts"
+        elif any(w in combined for w in ["margin", "gross margin", "毛利", "毛利率"]):
+            metrics_desc = " and analyzing unit margin and net revenue"
+
+        packaging_desc = ""
+        if any(w in combined for w in ["packaging", "size", "1kg", "bulk", "包裝", "規格", "大包裝", "小包裝"]):
+            packaging_desc = ", while evaluating 1kg bulk vs small packaging impact on return rates and net revenue"
+
+        time_mkt_prefix = f"{mkt} {month}".strip()
+        return f"Stakeholder wants to focus on {time_mkt_prefix} {items_desc}{metrics_desc}{packaging_desc}."
     else:
-        items_desc = "相關產品"
+        # Dimension extraction in Traditional Chinese
+        mkt = "德國市場 (DE)" if any(w in combined for w in ["德國", "de"]) else (
+            "奧地利市場 (AT)" if any(w in combined for w in ["奧地利", "at"]) else (
+                "法國市場 (FR)" if any(w in combined for w in ["法國", "fr"]) else "歐洲市場"
+            )
+        )
 
-    metrics_desc = ""
-    if any(w in combined for w in ["折價券", "折價", "促銷", "實際成交", "牌價"]):
-        metrics_desc = "並計算扣除促銷折價券後的實際成交均價"
-    elif any(w in combined for w in ["毛利", "毛利率"]):
-        metrics_desc = "並分析單位毛利率與淨營收"
+        month = ""
+        for note in reversed(valid_user_notes):
+            n_low = note.lower()
+            if any(w in n_low for w in ["9月", "九月", "september"]):
+                month = "9 月份"
+                break
+            elif any(w in n_low for w in ["8月", "八月", "august"]):
+                month = "8 月份"
+                break
+            elif any(w in n_low for w in ["10月", "十月", "october"]):
+                month = "10 月份"
+                break
 
-    packaging_desc = ""
-    if any(w in combined for w in ["包裝", "規格", "1kg", "大包裝", "小包裝"]):
-        packaging_desc = "，同時探討 1kg 大包裝 vs 小包裝規格對退貨率與淨營收之影響"
+        items: list[str] = []
+        if any(w in combined for w in ["杏仁", "almond"]):
+            items.append("杏仁")
+        if any(w in combined for w in ["腰果", "cashew"]):
+            items.append("腰果")
+        if items:
+            items_desc = f"{'與'.join(items)}品項"
+        elif "堅果" in combined:
+            items_desc = "堅果類產品"
+        elif "果乾" in combined:
+            items_desc = "果乾類產品"
+        else:
+            items_desc = "相關產品"
 
-    time_mkt_prefix = f"{mkt} {month}".strip()
-    return f"使用者想要聚焦{time_mkt_prefix}{items_desc}{metrics_desc}{packaging_desc}。"
+        metrics_desc = ""
+        if any(w in combined for w in ["折價券", "折價", "促銷", "實際成交", "牌價"]):
+            metrics_desc = "並計算扣除促銷折價券後的實際成交均價"
+        elif any(w in combined for w in ["毛利", "毛利率"]):
+            metrics_desc = "並分析單位毛利率與淨營收"
+
+        packaging_desc = ""
+        if any(w in combined for w in ["包裝", "規格", "1kg", "大包裝", "小包裝"]):
+            packaging_desc = "，同時探討 1kg 大包裝 vs 小包裝規格對退貨率與淨營收之影響"
+
+        time_mkt_prefix = f"{mkt} {month}".strip()
+        return f"使用者想要聚焦{time_mkt_prefix}{items_desc}{metrics_desc}{packaging_desc}。"
 
 
 def summarize_socratic_requirements(
@@ -1879,6 +2219,7 @@ def summarize_socratic_requirements(
     chat_history: list[dict[str, str]],
     watermark: dict[str, Any] | None = None,
     api_key: str = "",
+    is_en: bool | None = None,
 ) -> dict[str, Any]:
     """Synthesize conversation history, options, and business goal into a structured requirement memo.
 
@@ -1894,22 +2235,25 @@ def summarize_socratic_requirements(
     if watermark is None:
         watermark = get_lakehouse_watermark()
 
+    if is_en is None:
+        is_en = not is_chinese_text(user_goal + " " + " ".join([h.get("content", "") for h in chat_history]))
+
     # Extract conversation nuances with sanitization (purging off-topic noise)
-    off_topic_indicators = ["柯文哲", "總統", "天氣", "股票", "政治", "笑話", "誰是"]
+    off_topic_indicators = ["柯文哲", "總統", "天氣", "股票", "政治", "笑話", "誰是", "who is", "president", "weather"]
     user_chat_notes: list[str] = []
     for i, h in enumerate(chat_history):
         if h.get("role") == "user":
             c = h.get("content", "").strip()
-            if c and not any(term in c for term in off_topic_indicators):
+            if c and not any(term in c.lower() for term in off_topic_indicators):
                 if i + 1 < len(chat_history):
                     next_resp = chat_history[i + 1].get("content", "")
-                    if "超出" in next_resp and ("範疇" in next_resp or "範圍" in next_resp):
+                    if ("超出" in next_resp and ("範疇" in next_resp or "範圍" in next_resp)) or ("out of" in next_resp.lower() and "domain" in next_resp.lower()):
                         continue
                 user_chat_notes.append(c)
 
-    chat_context_notes = _sanitize_and_summarize_advisory_notes(chat_history, user_goal)
+    chat_context_notes = _sanitize_and_summarize_advisory_notes(chat_history, user_goal, is_en=is_en)
     if not chat_context_notes and user_chat_notes:
-        chat_context_notes = f"使用者需求要點：{'; '.join(user_chat_notes)}"
+        chat_context_notes = f"Key requirements: {'; '.join(user_chat_notes)}" if is_en else f"使用者需求要點：{'; '.join(user_chat_notes)}"
 
     combined_text = f"{user_goal} {' '.join(user_chat_notes)}".lower()
 
@@ -1976,16 +2320,16 @@ def summarize_socratic_requirements(
         for h in reversed(chat_history):
             if h.get("role") == "assistant":
                 a_norm = re.sub(r"\s+", "", h.get("content", "").lower())
-                if any(w in a_norm for w in ["水印區間", "全期", "2026-08-03至2026-10-31", "2026-08-03:2026-10-31"]):
+                if any(w in a_norm for w in ["水印區間", "全期", "2026-08-03至2026-10-31", "2026-08-03:2026-10-31", "full lakehouse", "watermark"]):
                     target_month_consensus = "FULL"
                     break
-                elif any(w in a_norm for w in ["鎖定在2026年9月", "2026年9月", "9月份", "2026-09"]):
+                elif any(w in a_norm for w in ["鎖定在2026年9月", "2026年9月", "9月份", "2026-09", "september"]):
                     target_month_consensus = "2026-09"
                     break
-                elif any(w in a_norm for w in ["鎖定在2026年8月", "2026年8月", "8月份", "最早月份"]):
+                elif any(w in a_norm for w in ["鎖定在2026年8月", "2026年8月", "8月份", "最早月份", "august"]):
                     target_month_consensus = "2026-08"
                     break
-                elif any(w in a_norm for w in ["2026年10月", "10月份", "最新月份", "2026-10"]):
+                elif any(w in a_norm for w in ["2026年10月", "10月份", "最新月份", "2026-10", "october"]):
                     target_month_consensus = "2026-10"
                     break
 
@@ -1994,25 +2338,25 @@ def summarize_socratic_requirements(
     if target_month_consensus == "FULL":
         s_date = watermark["min_date"]
         e_date = watermark["max_date"]
-        temporal_provenance_label = f" [已依對話共識鎖定為資料庫全期 ({s_date} 至 {e_date})]"
+        temporal_provenance_label = f" [Locked to full lakehouse watermark ({s_date} to {e_date})]" if is_en else f" [已依對話共識鎖定為資料庫全期 ({s_date} 至 {e_date})]"
     elif target_month_consensus == "2026-09":
         s_date = "2026-09-01"
         e_date = "2026-09-30"
-        temporal_provenance_label = " [已依對話共識鎖定為 9 月份 (2026-09-01 至 2026-09-30)]"
+        temporal_provenance_label = " [Locked to September (2026-09-01 to 2026-09-30)]" if is_en else " [已依對話共識鎖定為 9 月份 (2026-09-01 至 2026-09-30)]"
     elif target_month_consensus == "2026-08":
         s_date = "2026-08-03"
         e_date = "2026-08-31"
-        temporal_provenance_label = " [已依對話共識鎖定為最早月份 (2026-08-03 至 2026-08-31)]"
+        temporal_provenance_label = " [Locked to August (2026-08-03 to 2026-08-31)]" if is_en else " [已依對話共識鎖定為最早月份 (2026-08-03 至 2026-08-31)]"
     elif target_month_consensus == "2026-10":
         s_date = "2026-10-01"
         e_date = "2026-10-31"
-        temporal_provenance_label = " [已依對話共識鎖定為最近月份 (2026-10-01 至 2026-10-31)]"
+        temporal_provenance_label = " [Locked to October (2026-10-01 to 2026-10-31)]" if is_en else " [已依對話共識鎖定為最近月份 (2026-10-01 至 2026-10-31)]"
     elif ":" in temporal_val:
         s_date, e_date = temporal_val.split(":", 1)
     else:
         s_date, e_date = watermark["min_date"], watermark["max_date"]
 
-    date_range_display = f"{s_date} 至 {e_date}{temporal_provenance_label}"
+    date_range_display = f"{s_date} to {e_date}{temporal_provenance_label}" if is_en else f"{s_date} 至 {e_date}{temporal_provenance_label}"
 
     grain_val = decisions.get("grain", "")
 
@@ -2058,12 +2402,13 @@ def summarize_socratic_requirements(
 
     # LLM Structured Intent extraction if Gemini API key is available
     effective_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
-    objective_desc = f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
+    objective_desc = f"{user_goal} (In-depth analysis of dimensional metrics and market trends)" if is_en else f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
     if effective_key:
         try:
             from google import genai
             from google.genai import types
             client = genai.Client(api_key=effective_key)
+            target_obj_lang = "Concise paragraph in professional English" if is_en else "Concise paragraph in Traditional Chinese"
             prompt = (
                 "You are an expert Analytics Engineer. Consolidate this dialogue trajectory into a structured JSON analytical contract.\n"
                 f"Initial Goal: {user_goal}\n"
@@ -2076,7 +2421,7 @@ def summarize_socratic_requirements(
                 "- focus_entity: 'return_reason' | 'pricing_returns_fusion' | 'pricing_revenue' | 'category_margin' | 'product_catalog'\n\n"
                 "Return strictly valid JSON:\n"
                 "{\n"
-                "  \"analytical_objective\": \"Concise paragraph in Traditional Chinese\",\n"
+                f"  \"analytical_objective\": \"{target_obj_lang}\",\n"
                 "  \"target_grain\": \"Grain string e.g. Return Reason x Product SKU\",\n"
                 "  \"market_country\": \"DE | AT | FR | ALL_EU\",\n"
                 "  \"category_filter\": \"Nuts & Butters | Dried Fruits | Snacks & Bars | Superfoods & Seeds | null\",\n"
@@ -2113,6 +2458,13 @@ def summarize_socratic_requirements(
     if market_val not in active_markets and market_val != "ALL_EU":
         # Disallow phantom markets like 'TW', fall back to DE or explicit catalog
         market_val = "DE" if "DE" in active_markets else active_markets[0]
+
+    if is_en is True:
+        if is_chinese_text(objective_desc):
+            cat_text = f" for category {category_filter}" if category_filter else ""
+            objective_desc = f"Analyze {target_grain} across {market_val} market{cat_text} during {s_date} to {e_date} to diagnose key performance and operational metrics."
+        if chat_context_notes and is_chinese_text(chat_context_notes):
+            chat_context_notes = _sanitize_and_summarize_advisory_notes(user_chat_notes, is_en=True)
 
     return {
         "analytical_objective": objective_desc,
