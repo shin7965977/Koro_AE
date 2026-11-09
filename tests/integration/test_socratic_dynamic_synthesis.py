@@ -516,5 +516,68 @@ def test_explicit_temporal_consensus_locking_august_overrides_october() -> None:
     assert (result.data_preview["market_country"] == "DE").all()
 
 
+def test_pricing_and_returns_fusion_synthesizes_dual_cte_mart() -> None:
+    """Verify that inquiry on packaging, price, and returns synthesizes a Kimball dual-CTE mart with return rates."""
+    user_goal = "我們有不同包裝規格嗎？1kg 大包裝跟小包裝的單價差異會不會影響退貨？"
+    decisions = {
+        "geographic": "DE",
+        "temporal": "2026-08-03:2026-10-31",
+    }
+    chat_history = [
+        {"role": "user", "content": "我們有不同包裝規格嗎？1kg 大包裝跟小包裝的單價差異會不會影響退貨？"},
+        {"role": "assistant", "content": "是的，我們有各種包裝規格... 時間範圍：預設為資料湖現有的水印區間（2026-08-03 至 2026-10-31）。"},
+        {"role": "user", "content": "DE"},
+        {"role": "assistant", "content": "太好了！我們鎖定了德國 ('DE') 市場。"},
+        {"role": "user", "content": "所有產品自德國的整體表現"},
+    ]
+
+    memo = summarize_socratic_requirements(
+        user_goal=user_goal,
+        decisions=decisions,
+        chat_history=chat_history,
+    )
+
+    # 1. Invariants Check on Memo
+    assert memo["focus_entity"] == "pricing_returns_fusion"
+    assert memo["market_country"] == "DE"
+    assert "fct_returns" in memo["upstream_tables"]
+    assert "fct_order_items" in memo["upstream_tables"]
+    assert "dim_products" in memo["upstream_tables"]
+    assert "return_rate_pct" in memo["target_metrics"]
+    assert memo["start_date"] == "2026-08-03"
+    assert memo["end_date"] == "2026-10-31"
+
+    # 2. Synthesize with memo contract
+    signed_decisions = dict(decisions)
+    signed_decisions["start_date"] = memo["start_date"]
+    signed_decisions["end_date"] = memo["end_date"]
+    signed_decisions["geographic"] = memo["market_country"]
+    signed_decisions["focus_entity"] = memo["focus_entity"]
+    signed_decisions["custom_chat_notes"] = f"custom:{memo.get('chat_context_notes')}"
+
+    result = synthesize_dynamic_dbt_model(user_goal, signed_decisions)
+
+    # 3. Invariants Check on Synthesis & Execution
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert "sales_summary AS" in result.dbt_sql
+    assert "returns_summary AS" in result.dbt_sql
+    assert "mart_product_price_return_performance_de" in result.dbt_sql
+
+    # 4. Preview Data Invariants
+    df = result.data_preview
+    assert len(df) == 12  # All 12 SKUs cleanly represented
+    assert (df["market_country"] == "DE").all()
+    assert "packaging_size" in df.columns
+    assert "catalog_unit_price_eur" in df.columns
+    assert "realized_avg_unit_price_eur" in df.columns
+    assert "gross_margin_eur" in df.columns
+    assert "total_units_sold" in df.columns
+    assert "total_units_returned" in df.columns
+    assert "return_rate_pct" in df.columns
+    assert (df["return_rate_pct"] >= 0).all()
+
+
+
 
 

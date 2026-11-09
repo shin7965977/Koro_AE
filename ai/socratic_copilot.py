@@ -706,6 +706,18 @@ def synthesize_dynamic_dbt_model(
     is_promo_intent = grain_val == "promotions_vouchers" or any(k in combined_query for k in promo_keywords)
 
     has_price_revenue_rel = any(w in combined_query for w in ["價格與營收", "價格跟營收", "產品價格與營收", "單價與營收", "價格", "price"]) and any(w in combined_query for w in ["營收", "營業額", "revenue", "sales"])
+    has_packaging_or_price = (
+        has_price_revenue_rel
+        or any(k in combined_query for k in ["包裝", "規格", "packaging", "size", "1kg", "價格", "單價", "price"])
+    )
+    has_return_metric_intent = (
+        focus_entity in ["pricing_returns_fusion", "returns"]
+        or any(w in combined_query for w in ["退貨", "退款", "refund", "return", "退貨率"])
+    )
+    has_cross_fact_fusion_intent = (
+        focus_entity == "pricing_returns_fusion"
+        or (has_packaging_or_price and has_return_metric_intent and not has_return_reason_intent)
+    )
 
     if has_return_reason_intent:
         # Highest precedence for deep drill-down: Return Reason Ranking & Analysis
@@ -816,6 +828,103 @@ def synthesize_dynamic_dbt_model(
             "        tests: [not_null]\n"
             "      - name: category_name\n"
             "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+        )
+
+    elif has_cross_fact_fusion_intent:
+        # Cross-Fact Dual-CTE Fusion Mart: Price, Packaging & Return Performance (Kimball Compliant)
+        geo_filter_sales = f"AND co.market_country = '{geo_val}'\n" if (geo_val and geo_val in ["DE", "AT", "FR"]) else ""
+        geo_filter_returns = f"AND o.market_country = '{geo_val}'\n" if (geo_val and geo_val in ["DE", "AT", "FR"]) else ""
+        
+        country_suffix = f"_{geo_val.lower()}" if (geo_val and geo_val in ["DE", "AT", "FR"]) else ""
+        model_name = f"mart_product_price_return_performance{country_suffix}"
+        scenario_title = f"Product Price, Packaging & Return Performance ({start_date} ~ {end_date})"
+        target_grain = "Product SKU x Packaging Size"
+        upstream_tables = ["dim_products", "fct_order_items", "fct_orders", "fct_returns"]
+
+        dbt_sql = (
+            f"-- Model: {model_name}.sql\n"
+            "{{ config(\n"
+            "    materialized='table',\n"
+            "    schema='gold_marts',\n"
+            f"    tags=['pricing', 'revenue', 'returns', 'packaging', 'governed']\n"
+            ") }}\n\n"
+            "WITH sales_summary AS (\n"
+            "    SELECT\n"
+            "        i.product_id,\n"
+            "        co.market_country,\n"
+            "        COUNT(DISTINCT i.order_id) AS total_orders,\n"
+            "        SUM(i.quantity_sold) AS total_units_sold,\n"
+            "        ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,\n"
+            "        ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur,\n"
+            "        ROUND(SUM(i.cogs_eur), 2) AS total_cogs_eur,\n"
+            "        ROUND(SUM(i.line_net_eur) / NULLIF(SUM(i.quantity_sold), 0), 2) AS realized_avg_unit_price_eur\n"
+            "    FROM {{ ref('fct_order_items') }} i\n"
+            "    JOIN {{ ref('fct_orders') }} co USING (order_id)\n"
+            f"    WHERE i.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
+            f"        {geo_filter_sales}"
+            "    GROUP BY i.product_id, co.market_country\n"
+            "),\n\n"
+            "returns_summary AS (\n"
+            "    SELECT\n"
+            "        r.product_id,\n"
+            "        o.market_country,\n"
+            "        COUNT(r.return_id) AS total_return_cases,\n"
+            "        SUM(r.returned_units) AS total_units_returned,\n"
+            "        ROUND(SUM(r.refunded_eur), 2) AS total_refunded_eur\n"
+            "    FROM {{ ref('fct_returns') }} r\n"
+            "    JOIN {{ ref('fct_orders') }} o USING (order_id)\n"
+            f"    WHERE r.return_date BETWEEN '{start_date}' AND '{end_date}'\n"
+            f"        {geo_filter_returns}"
+            "    GROUP BY r.product_id, o.market_country\n"
+            ")\n\n"
+            "SELECT\n"
+            "    p.product_id,\n"
+            "    p.product_name,\n"
+            "    p.category_name,\n"
+            "    p.packaging_size,\n"
+            "    p.unit_price_eur AS catalog_unit_price_eur,\n"
+            "    s.market_country,\n"
+            "    s.total_orders,\n"
+            "    s.total_units_sold,\n"
+            "    s.gross_revenue_eur,\n"
+            "    s.net_revenue_eur,\n"
+            "    s.realized_avg_unit_price_eur,\n"
+            "    ROUND(s.net_revenue_eur - s.total_cogs_eur, 2) AS gross_margin_eur,\n"
+            "    COALESCE(r.total_units_returned, 0) AS total_units_returned,\n"
+            "    COALESCE(r.total_refunded_eur, 0) AS total_refunded_eur,\n"
+            "    ROUND(COALESCE(r.total_units_returned, 0)::NUMERIC / NULLIF(s.total_units_sold, 0) * 100, 2) AS return_rate_pct\n"
+            "FROM sales_summary s\n"
+            "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
+            "LEFT JOIN returns_summary r USING (product_id, market_country)\n"
+            "ORDER BY s.gross_revenue_eur DESC;"
+        )
+
+        schema_yaml = (
+            "version: 2\n\n"
+            "models:\n"
+            f"  - name: {model_name}\n"
+            "    description: 'Governed cross-fact mart evaluating product price, packaging size, revenue, and return rate performance.'\n"
+            "    meta:\n"
+            "      owner: 'commercial_pricing'\n"
+            "      contains_pii: false\n"
+            "      gdpr_compliant: true\n"
+            "      data_layer: 'gold'\n"
+            "    columns:\n"
+            "      - name: product_id\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: packaging_size\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: catalog_unit_price_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+            "      - name: gross_revenue_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+            "      - name: return_rate_pct\n"
+            "        data_type: numeric\n"
             "        tests: [not_null]\n"
         )
 
@@ -1615,6 +1724,7 @@ def summarize_socratic_requirements(
     has_august_consensus = False
     has_september_consensus = False
     has_october_consensus = False
+    has_full_watermark_consensus = False
 
     for i, h in enumerate(chat_history):
         content_norm = re.sub(r"\s+", "", h.get("content", "").lower())
@@ -1637,12 +1747,20 @@ def summarize_socratic_requirements(
             has_august_consensus = True
             break
 
+        # 4. Assistant or user proposed full lakehouse watermark period
+        if any(w in content_norm for w in ["水印區間（2026-08-03至2026-10-31）", "水印區間(2026-08-03至2026-10-31)", "2026-08-03至2026-10-31", "全期數據", "全期間"]):
+            has_full_watermark_consensus = True
+
     temporal_provenance_label = ""
     temporal_val = decisions.get("temporal", f"{watermark['min_date']}:{watermark['max_date']}")
     if has_august_consensus:
         s_date = "2026-08-03"
         e_date = "2026-08-31"
         temporal_provenance_label = " [已依對話共識鎖定為最早月份]"
+    elif has_full_watermark_consensus:
+        s_date = watermark["min_date"]
+        e_date = watermark["max_date"]
+        temporal_provenance_label = f" [已依對話共識鎖定為資料庫水印全期 ({s_date} 至 {e_date})]"
     elif ":" in temporal_val:
         s_date, e_date = temporal_val.split(":", 1)
     else:
@@ -1653,17 +1771,30 @@ def summarize_socratic_requirements(
     grain_val = decisions.get("grain", "")
 
     # Consolidate target metrics & tables based on intent and chat notes
+    has_pricing_packaging_intent = any(k in combined_text for k in ["包裝", "規格", "packaging", "size", "1kg", "價格", "單價", "price", "定價"])
+    has_return_metric_intent = any(k in combined_text for k in ["退貨", "退款", "refund", "return", "退貨率"])
+
     if has_return_reason_intent:
         focus_entity = "return_reason"
         target_grain = "Return Reason x Product SKU"
         metrics = ["return_reason", "total_return_cases", "total_returned_units", "total_refunded_eur"]
         upstream = ["fct_returns", "fct_order_items", "fct_orders", "dim_products"]
-    elif any(k in combined_text for k in ["包裝", "規格", "packaging", "size", "1kg"]):
+    elif has_pricing_packaging_intent and has_return_metric_intent:
+        # Cross-Fact Dual-CTE Fusion Mart: Pricing, Packaging, Revenue & Returns
+        focus_entity = "pricing_returns_fusion"
+        target_grain = "Product SKU x Packaging Size"
+        metrics = [
+            "packaging_size", "catalog_unit_price_eur", "realized_avg_unit_price_eur",
+            "total_units_sold", "gross_revenue_eur", "net_revenue_eur", "gross_margin_eur",
+            "total_units_returned", "total_refunded_eur", "return_rate_pct"
+        ]
+        upstream = ["dim_products", "fct_order_items", "fct_orders", "fct_returns"]
+    elif has_pricing_packaging_intent:
         focus_entity = "pricing_revenue"
         target_grain = "Product SKU x Packaging Size"
         metrics = ["unit_price_eur", "total_quantity_sold", "total_line_gross_eur", "realized_avg_unit_price_eur"]
         upstream = ["dim_products", "fct_order_items", "fct_orders"]
-    elif any(k in combined_text for k in ["退貨", "退款", "refund", "return"]):
+    elif has_return_metric_intent:
         focus_entity = "returns"
         target_grain = "Return Event Log" if "明細" in combined_text or grain_val == "return_event" else "Product SKU Summary"
         metrics = ["refund_amount_eur", "return_count", "return_rate_pct"]
@@ -1696,14 +1827,14 @@ def summarize_socratic_requirements(
                 "Available lakehouse dimensional values:\n"
                 "- market_country: 'DE' | 'AT' | 'FR' | 'ALL_EU'\n"
                 "- category_filter: 'Nuts & Butters' | 'Dried Fruits' | 'Snacks & Bars' | 'Superfoods & Seeds' | null\n"
-                "- focus_entity: 'return_reason' | 'pricing_revenue' | 'category_margin' | 'product_catalog'\n\n"
+                "- focus_entity: 'return_reason' | 'pricing_returns_fusion' | 'pricing_revenue' | 'category_margin' | 'product_catalog'\n\n"
                 "Return strictly valid JSON:\n"
                 "{\n"
                 "  \"analytical_objective\": \"Concise paragraph in Traditional Chinese\",\n"
                 "  \"target_grain\": \"Grain string e.g. Return Reason x Product SKU\",\n"
                 "  \"market_country\": \"DE | AT | FR | ALL_EU\",\n"
                 "  \"category_filter\": \"Nuts & Butters | Dried Fruits | Snacks & Bars | Superfoods & Seeds | null\",\n"
-                "  \"focus_entity\": \"return_reason | pricing_revenue | category_margin | product_catalog\",\n"
+                "  \"focus_entity\": \"return_reason | pricing_returns_fusion | pricing_revenue | category_margin | product_catalog\",\n"
                 "  \"target_metrics\": [\"string\"]\n"
                 "}"
             )
@@ -1722,7 +1853,7 @@ def summarize_socratic_requirements(
                     market_val = parsed["market_country"]
                 if parsed.get("category_filter") in ["Nuts & Butters", "Dried Fruits", "Snacks & Bars", "Superfoods & Seeds"]:
                     category_filter = parsed["category_filter"]
-                if parsed.get("focus_entity") in ["return_reason", "pricing_revenue", "category_margin", "product_catalog"]:
+                if parsed.get("focus_entity") in ["return_reason", "pricing_returns_fusion", "pricing_revenue", "category_margin", "product_catalog"]:
                     focus_entity = parsed["focus_entity"]
                 if parsed.get("target_grain"):
                     target_grain = parsed["target_grain"]
