@@ -654,7 +654,46 @@ def synthesize_dynamic_dbt_model(
         else:
             geo_val = "ALL_EU"
 
+    # Recency Override from dialogue context:
+    # If the user explicitly locked down Germany / DE in chat, override any default ALL_EU
+    for note in reversed(custom_notes):
+        n_low = note.lower()
+        if any(w in n_low for w in ["德國", "de", "germany", "german"]):
+            geo_val = "DE"
+            break
+        elif any(w in n_low for w in ["奧地利", "at", "austria"]):
+            geo_val = "AT"
+            break
+        elif any(w in n_low for w in ["法國", "fr", "france"]):
+            geo_val = "FR"
+            break
+
+    # Category Filter from dialogue context
+    category_filter = decisions.get("category_filter")
+    if not category_filter:
+        for note in reversed(custom_notes):
+            n_low = note.lower()
+            if any(w in n_low for w in ["堅果", "nut"]):
+                category_filter = "Nuts & Butters"
+                break
+            elif any(w in n_low for w in ["果乾", "dried fruit", "mango", "date"]):
+                category_filter = "Dried Fruits"
+                break
+            elif any(w in n_low for w in ["點心", "零食", "snack", "bar"]):
+                category_filter = "Snacks & Bars"
+                break
+            elif any(w in n_low for w in ["超級食物", "種子", "seed", "chia", "hemp"]):
+                category_filter = "Superfoods & Seeds"
+                break
+
     grain_val = decisions.get("grain", "")
+    focus_entity = decisions.get("focus_entity", "")
+
+    # Check for Return Reason ranking intent
+    has_return_reason_intent = (
+        focus_entity == "return_reason"
+        or any(w in combined_query for w in ["退貨原因", "退款原因", "return reason", "return_reason", "原因排行"])
+    )
 
     # 2. Dynamic Model Synthesis by Intent Routing
     catalog_keywords = ["多少產品", "幾款產品", "產品清單", "商品型錄", "商品目錄", "how many products", "product catalog", "list products", "catalog"]
@@ -665,7 +704,73 @@ def synthesize_dynamic_dbt_model(
 
     has_price_revenue_rel = any(w in combined_query for w in ["價格與營收", "價格跟營收", "產品價格與營收", "單價與營收", "價格", "price"]) and any(w in combined_query for w in ["營收", "營業額", "revenue", "sales"])
 
-    if is_catalog_intent:
+    if has_return_reason_intent:
+        # Highest precedence for deep drill-down: Return Reason Ranking & Analysis
+        mkt_tag = geo_val.lower() if (geo_val and geo_val in ["DE", "AT", "FR"]) else "all_eu"
+        cat_slug = "nuts" if category_filter == "Nuts & Butters" else ("fruits" if category_filter == "Dried Fruits" else "all_categories")
+        model_name = f"mart_{mkt_tag}_{cat_slug}_return_reason_analysis"
+        scenario_title = f"{mkt_tag.upper()} Market {category_filter or 'All Categories'} Return Reason Ranking ({start_date} ~ {end_date})"
+        target_grain = "Return Reason x Product SKU"
+        upstream_tables = ["dim_products", "fct_orders", "fct_returns"]
+
+        where_clauses = [f"r.return_date BETWEEN '{start_date}' AND '{end_date}'"]
+        if geo_val and geo_val in ["DE", "AT", "FR"]:
+            where_clauses.append(f"o.market_country = '{geo_val}'")
+        if category_filter:
+            where_clauses.append(f"p.category_name = '{category_filter}'")
+        where_sql = "\n    AND ".join(where_clauses)
+
+        dbt_sql = (
+            f"-- Model: {model_name}.sql\n"
+            "{{ config(\n"
+            "    materialized='table',\n"
+            "    schema='gold_marts',\n"
+            f"    tags=['returns', 'reasons', '{mkt_tag}', 'governed']\n"
+            ") }}\n\n"
+            "SELECT\n"
+            "    p.product_id,\n"
+            "    p.product_name,\n"
+            "    p.packaging_size,\n"
+            "    p.category_name,\n"
+            "    o.market_country,\n"
+            "    r.return_reason,\n"
+            "    COUNT(r.return_id) AS total_return_cases,\n"
+            "    SUM(r.returned_units) AS total_returned_units,\n"
+            "    ROUND(SUM(r.refunded_eur), 2) AS total_refunded_eur\n"
+            "FROM {{ ref('fct_returns') }} r\n"
+            "JOIN {{ ref('fct_orders') }} o USING (order_id)\n"
+            "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
+            f"WHERE {where_sql}\n"
+            "GROUP BY p.product_id, p.product_name, p.packaging_size, p.category_name, o.market_country, r.return_reason\n"
+            "ORDER BY total_refunded_eur DESC, total_return_cases DESC;"
+        )
+
+        schema_yaml = (
+            "version: 2\n\n"
+            "models:\n"
+            f"  - name: {model_name}\n"
+            f"    description: 'Governed return reason breakdown and ranking for {mkt_tag.upper()} {category_filter or ''}.'\n"
+            "    meta:\n"
+            "      owner: 'operations_quality'\n"
+            "      contains_pii: false\n"
+            "      gdpr_compliant: true\n"
+            "      data_layer: 'gold'\n"
+            "    columns:\n"
+            "      - name: product_id\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: return_reason\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: total_return_cases\n"
+            "        data_type: integer\n"
+            "        tests: [not_null]\n"
+            "      - name: total_refunded_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+        )
+
+    elif is_catalog_intent:
         model_name = "mart_product_catalog"
         scenario_title = "Product Catalog & SKU Master Inventory"
         target_grain = "Product SKU"
@@ -1457,6 +1562,41 @@ def summarize_socratic_requirements(
         if h.get("role") == "user" and h.get("content", "").strip()
     ]
     chat_context_notes = "; ".join(user_chat_notes)
+    combined_text = f"{user_goal} {chat_context_notes}".lower()
+
+    # Recency Override: Extract specific entities from latest user turns
+    market_val = decisions.get("geographic", "ALL_EU")
+    for note in reversed(user_chat_notes):
+        n_low = note.lower()
+        if any(w in n_low for w in ["德國", "de", "germany", "german"]):
+            market_val = "DE"
+            break
+        elif any(w in n_low for w in ["奧地利", "at", "austria"]):
+            market_val = "AT"
+            break
+        elif any(w in n_low for w in ["法國", "fr", "france"]):
+            market_val = "FR"
+            break
+
+    # Extract Category Filter from user dialogue
+    category_filter = None
+    for note in reversed(user_chat_notes):
+        n_low = note.lower()
+        if any(w in n_low for w in ["堅果", "nut"]):
+            category_filter = "Nuts & Butters"
+            break
+        elif any(w in n_low for w in ["果乾", "dried fruit", "mango", "date"]):
+            category_filter = "Dried Fruits"
+            break
+        elif any(w in n_low for w in ["點心", "零食", "snack", "bar"]):
+            category_filter = "Snacks & Bars"
+            break
+        elif any(w in n_low for w in ["超級食物", "種子", "seed", "chia", "hemp"]):
+            category_filter = "Superfoods & Seeds"
+            break
+
+    # Detect Focus Entity from dialogue
+    has_return_reason_intent = any(w in combined_text for w in ["退貨原因", "退款原因", "return reason", "return_reason", "原因排行"])
 
     temporal_val = decisions.get("temporal", f"{watermark['min_date']}:{watermark['max_date']}")
     if ":" in temporal_val:
@@ -1464,25 +1604,31 @@ def summarize_socratic_requirements(
     else:
         s_date, e_date = watermark["min_date"], watermark["max_date"]
 
-    market_val = decisions.get("geographic", "ALL_EU")
     grain_val = decisions.get("grain", "")
 
     # Consolidate target metrics & tables based on intent and chat notes
-    combined_text = f"{user_goal} {chat_context_notes}".lower()
-
-    if any(k in combined_text for k in ["包裝", "規格", "packaging", "size", "1kg"]):
+    if has_return_reason_intent:
+        focus_entity = "return_reason"
+        target_grain = "Return Reason x Product SKU"
+        metrics = ["return_reason", "total_return_cases", "total_returned_units", "total_refunded_eur"]
+        upstream = ["fct_returns", "fct_order_items", "fct_orders", "dim_products"]
+    elif any(k in combined_text for k in ["包裝", "規格", "packaging", "size", "1kg"]):
+        focus_entity = "pricing_revenue"
         target_grain = "Product SKU x Packaging Size"
-        metrics = ["unit_price_eur", "total_quantity_sold", "total_line_gross_eur", "return_rate_pct"]
+        metrics = ["unit_price_eur", "total_quantity_sold", "total_line_gross_eur", "realized_avg_unit_price_eur"]
         upstream = ["dim_products", "fct_order_items", "fct_orders"]
     elif any(k in combined_text for k in ["退貨", "退款", "refund", "return"]):
+        focus_entity = "returns"
         target_grain = "Return Event Log" if "明細" in combined_text or grain_val == "return_event" else "Product SKU Summary"
         metrics = ["refund_amount_eur", "return_count", "return_rate_pct"]
         upstream = ["fct_returns", "fct_order_items", "dim_products"]
     elif any(k in combined_text for k in ["毛利", "margin", "cost"]):
+        focus_entity = "margin"
         target_grain = "Category x Market"
         metrics = ["line_net_eur", "cogs_eur", "net_margin_eur", "net_margin_pct"]
         upstream = ["fct_order_items", "fct_orders", "dim_products"]
     else:
+        focus_entity = "revenue"
         target_grain = "Monthly Order Summary" if "月" in combined_text else "Order Item Summary"
         metrics = ["gross_revenue_eur", "net_revenue_eur", "discount_eur", "total_orders"]
         upstream = ["fct_orders", "fct_order_items", "dim_products"]
@@ -1519,7 +1665,11 @@ def summarize_socratic_requirements(
         "analytical_objective": objective_desc,
         "target_grain": target_grain,
         "date_range": f"{s_date} 至 {e_date}",
+        "start_date": s_date,
+        "end_date": e_date,
         "market_country": market_val,
+        "category_filter": category_filter,
+        "focus_entity": focus_entity,
         "target_metrics": metrics,
         "upstream_tables": upstream,
         "chat_context_notes": chat_context_notes,

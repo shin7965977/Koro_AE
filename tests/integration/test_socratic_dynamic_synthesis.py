@@ -377,3 +377,60 @@ def test_summarize_socratic_requirements_and_signoff_synthesis() -> None:
     assert "gross_revenue_eur" in result.data_preview.columns
     assert (result.data_preview["market_country"] == "DE").all()
 
+
+def test_dialogue_recency_override_synthesizes_de_nuts_return_reasons() -> None:
+    """Verify that multi-turn dialogue with DE market, Nuts category, and return reasons overrides defaults."""
+    initial_goal = "我想分析產品價格跟營收的關係，還有退貨情況"
+    default_decisions = {
+        "temporal": "2026-08-03:2026-10-31",
+        "geographic": "ALL_EU",  # Default from radio
+    }
+    chat_history = [
+        {"role": "user", "content": "我們有不同包裝規格嗎？1kg 大包裝跟小包裝的單價差異會不會影響退貨？"},
+        {"role": "assistant", "content": "是的，我們在 dim_products 中有提供 packaging_size 與單價..."},
+        {"role": "user", "content": "先鎖定德國市場"},
+        {"role": "assistant", "content": "太好了！我們已將分析範圍縮小至德國市場 (DE)..."},
+        {"role": "user", "content": "加入商品分類"},
+        {"role": "assistant", "content": "沒問題！請問您希望優先檢視哪些商品類別？"},
+        {"role": "user", "content": "堅果類"},
+        {"role": "assistant", "content": "太棒了！已鎖定德國市場 (DE) 的「堅果類」產品..."},
+        {"role": "user", "content": "退貨原因"},
+        {"role": "assistant", "content": "沒問題！我們將深入分析退貨原因 (return_reason)..."},
+        {"role": "user", "content": "整體排行"},
+        {"role": "assistant", "content": "收到了！將檢視德國市場堅果類產品的退貨原因整體排行。"},
+    ]
+
+    memo = summarize_socratic_requirements(
+        user_goal=initial_goal,
+        decisions=default_decisions,
+        chat_history=chat_history,
+    )
+
+    # Invariants Check: Recency Override must win
+    assert memo["market_country"] == "DE"
+    assert memo["category_filter"] == "Nuts & Butters"
+    assert memo["focus_entity"] == "return_reason"
+    assert "fct_returns" in memo["upstream_tables"]
+
+    # Synthesize with signed-off memo decisions
+    signed_decisions = dict(default_decisions)
+    signed_decisions["geographic"] = memo["market_country"]
+    signed_decisions["category_filter"] = memo["category_filter"]
+    signed_decisions["focus_entity"] = memo["focus_entity"]
+    signed_decisions["custom_chat_notes"] = f"custom:{memo.get('chat_context_notes')}"
+
+    result = synthesize_dynamic_dbt_model(initial_goal, signed_decisions)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert result.spec_id == "SCHEMA-MART_DE_NUTS_RETURN_REASON_ANALYSIS"
+    assert "return_reason" in result.data_preview.columns
+    assert "total_return_cases" in result.data_preview.columns
+    assert "total_refunded_eur" in result.data_preview.columns
+    assert len(result.data_preview) > 0
+
+    # Strict Zero-Facade: Only DE and only Nuts & Butters must exist!
+    assert (result.data_preview["market_country"] == "DE").all()
+    assert (result.data_preview["category_name"] == "Nuts & Butters").all()
+    assert not (result.data_preview["category_name"] == "Dried Fruits").any()
+
+
