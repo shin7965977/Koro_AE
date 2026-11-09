@@ -434,3 +434,42 @@ def test_dialogue_recency_override_synthesizes_de_nuts_return_reasons() -> None:
     assert not (result.data_preview["category_name"] == "Dried Fruits").any()
 
 
+def test_dialogue_causes_distribution_syntax_triggers_return_reasons() -> None:
+    """Verify that colloquial user input '原因分布' triggers return_reason focus without exact keyword match."""
+    initial_goal = "我想分析產品價格跟營收的關係，還有退貨情況"
+    default_decisions = {
+        "temporal": "2026-10-01:2026-10-31",
+        "geographic": "ALL_EU",
+    }
+    chat_history = [
+        {"role": "user", "content": "先鎖定德國"},
+        {"role": "assistant", "content": "好的，鎖定德國市場 (DE)..."},
+        {"role": "user", "content": "原因分布"},
+        {"role": "assistant", "content": "沒問題！我們來深入分析德國市場 (DE) 的退貨原因分佈。"},
+    ]
+
+    memo = summarize_socratic_requirements(
+        user_goal=initial_goal,
+        decisions=default_decisions,
+        chat_history=chat_history,
+    )
+
+    # Invariants Check: '原因分布' must accurately resolve to focus_entity == 'return_reason'
+    assert memo["market_country"] == "DE"
+    assert memo["focus_entity"] == "return_reason"
+    assert "return_reason" in memo["target_metrics"]
+
+    # Synthesize with memo contract
+    signed_decisions = dict(default_decisions)
+    signed_decisions["geographic"] = memo["market_country"]
+    signed_decisions["focus_entity"] = memo["focus_entity"]
+    signed_decisions["custom_chat_notes"] = f"custom:{memo.get('chat_context_notes')}"
+
+    result = synthesize_dynamic_dbt_model(initial_goal, signed_decisions)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert "return_reason" in result.data_preview.columns
+    assert (result.data_preview["market_country"] == "DE").all()
+
+
+

@@ -1595,8 +1595,15 @@ def summarize_socratic_requirements(
             category_filter = "Superfoods & Seeds"
             break
 
-    # Detect Focus Entity from dialogue
-    has_return_reason_intent = any(w in combined_text for w in ["退貨原因", "退款原因", "return reason", "return_reason", "原因排行"])
+    # Detect Focus Entity from dialogue with comprehensive semantic coverage
+    return_reason_indicators = [
+        "退貨原因", "退款原因", "return reason", "return_reason", "原因排行",
+        "原因分布", "原因分佈", "退貨分布", "退貨分佈", "退貨情況", "退貨分析", "退貨問題"
+    ]
+    has_return_reason_intent = (
+        any(w in combined_text for w in return_reason_indicators)
+        or (any(w in combined_text for w in ["原因", "reason"]) and any(w in combined_text for w in ["退貨", "退款", "refund", "return"]))
+    )
 
     temporal_val = decisions.get("temporal", f"{watermark['min_date']}:{watermark['max_date']}")
     if ":" in temporal_val:
@@ -1633,33 +1640,57 @@ def summarize_socratic_requirements(
         metrics = ["gross_revenue_eur", "net_revenue_eur", "discount_eur", "total_orders"]
         upstream = ["fct_orders", "fct_order_items", "dim_products"]
 
-    # LLM summarization if available
+    # LLM Structured Intent extraction if Gemini API key is available
     effective_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+    objective_desc = f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
     if effective_key:
         try:
             from google import genai
             from google.genai import types
             client = genai.Client(api_key=effective_key)
             prompt = (
-                f"Consolidate these data requirements into a concise business objective description:\n"
-                f"Goal: {user_goal}\n"
+                "You are an expert Analytics Engineer. Consolidate this dialogue trajectory into a structured JSON analytical contract.\n"
+                f"Initial Goal: {user_goal}\n"
                 f"Date Range: {s_date} ~ {e_date}\n"
-                f"Market: {market_val}\n"
-                f"Chat Notes: {chat_context_notes}\n"
-                "Return a single paragraph in Traditional Chinese summarizing the exact scope and purpose."
+                f"Radio Decisions: {decisions}\n"
+                f"Chat History Notes: {chat_context_notes}\n\n"
+                "Available lakehouse dimensional values:\n"
+                "- market_country: 'DE' | 'AT' | 'FR' | 'ALL_EU'\n"
+                "- category_filter: 'Nuts & Butters' | 'Dried Fruits' | 'Snacks & Bars' | 'Superfoods & Seeds' | null\n"
+                "- focus_entity: 'return_reason' | 'pricing_revenue' | 'category_margin' | 'product_catalog'\n\n"
+                "Return strictly valid JSON:\n"
+                "{\n"
+                "  \"analytical_objective\": \"Concise paragraph in Traditional Chinese\",\n"
+                "  \"target_grain\": \"Grain string e.g. Return Reason x Product SKU\",\n"
+                "  \"market_country\": \"DE | AT | FR | ALL_EU\",\n"
+                "  \"category_filter\": \"Nuts & Butters | Dried Fruits | Snacks & Bars | Superfoods & Seeds | null\",\n"
+                "  \"focus_entity\": \"return_reason | pricing_revenue | category_margin | product_catalog\",\n"
+                "  \"target_metrics\": [\"string\"]\n"
+                "}"
             )
             resp = client.models.generate_content(
                 model=os.getenv("LLM_MODEL", "gemini-3.5-flash-lite"),
                 contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                ),
             )
             if resp and resp.text:
-                objective_desc = resp.text.strip()
-            else:
-                objective_desc = f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
+                parsed = json.loads(resp.text)
+                if parsed.get("analytical_objective"):
+                    objective_desc = parsed["analytical_objective"].strip()
+                if parsed.get("market_country") in ["DE", "AT", "FR", "ALL_EU"]:
+                    market_val = parsed["market_country"]
+                if parsed.get("category_filter") in ["Nuts & Butters", "Dried Fruits", "Snacks & Bars", "Superfoods & Seeds"]:
+                    category_filter = parsed["category_filter"]
+                if parsed.get("focus_entity") in ["return_reason", "pricing_revenue", "category_margin", "product_catalog"]:
+                    focus_entity = parsed["focus_entity"]
+                if parsed.get("target_grain"):
+                    target_grain = parsed["target_grain"]
+                if parsed.get("target_metrics"):
+                    metrics = parsed["target_metrics"]
         except Exception:
-            objective_desc = f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
-    else:
-        objective_desc = f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
+            pass
 
     return {
         "analytical_objective": objective_desc,
