@@ -563,6 +563,7 @@ def test_pricing_and_returns_fusion_synthesizes_dual_cte_mart() -> None:
     assert "sales_summary AS" in result.dbt_sql
     assert "returns_summary AS" in result.dbt_sql
     assert "mart_product_price_return_performance_de" in result.dbt_sql
+    assert "ORDER BY p.category_name, p.packaging_size" in result.dbt_sql
 
     # 4. Preview Data Invariants
     df = result.data_preview
@@ -576,6 +577,8 @@ def test_pricing_and_returns_fusion_synthesizes_dual_cte_mart() -> None:
     assert "total_units_returned" in df.columns
     assert "return_rate_pct" in df.columns
     assert (df["return_rate_pct"] >= 0).all()
+    # Ensure return_rate_pct is placed early in the column order for instant decision-making visibility
+    assert list(df.columns).index("return_rate_pct") <= 7
 
 
 
