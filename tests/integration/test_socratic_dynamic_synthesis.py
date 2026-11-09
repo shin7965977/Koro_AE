@@ -275,4 +275,52 @@ def test_dynamic_dbt_synthesis_with_custom_fill_in() -> None:
     assert "2026-09-30" in result.dbt_sql
     assert len(result.data_preview) > 0
     assert (result.data_preview["market_country"] == "AT").all()
-    assert any("自訂補充" in trace["detail"] for trace in result.audit_trace)
+    assert any("Custom Note" in trace["detail"] for trace in result.audit_trace)
+
+
+def test_temporal_watermark_exceeded_triggers_socratic_clarification() -> None:
+    """Verify asking for an out-of-watermark month (e.g. 12月, 4月, 6月) halts and asks Socratic question."""
+    session = analyze_socratic_inquiry("請給我12月的營業銷售額")
+    assert session.is_out_of_domain is False
+    assert session.needs_clarification is True
+    temp_q = next(q for q in session.questions if q.dimension_type == "temporal")
+    assert "超出實體水浮標記" in temp_q.title
+    assert "2026-10" in temp_q.explanation
+    opt_values = [opt["value"] for opt in temp_q.options]
+    assert any("2026-10-01" in v for v in opt_values)
+    assert any("2026-09-01" in v for v in opt_values)
+
+
+def test_catalog_query_intent_synthesizes_product_catalog() -> None:
+    """Verify asking '我目前有多少產品' synthesizes mart_product_catalog with 12 real SKUs."""
+    session = analyze_socratic_inquiry("我目前有多少產品")
+    assert session.is_out_of_domain is False
+    assert session.needs_clarification is False
+    assert session.locked_decisions.get("grain") == "catalog_summary"
+
+    result = synthesize_dynamic_dbt_model("我目前有多少產品", session.locked_decisions)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert result.spec_id == "SCHEMA-MART_PRODUCT_CATALOG"
+    assert len(result.data_preview) == 12  # All 12 core catalog SKUs
+    cols = list(result.data_preview.columns)
+    assert "product_id" in cols
+    assert "product_name" in cols
+    assert "category_name" in cols
+    assert "price_eur" in cols
+
+
+def test_promotions_and_vouchers_intent_synthesizes_voucher_metrics() -> None:
+    """Verify asking for '促銷訂單量' synthesizes mart_promotions_and_vouchers with voucher columns."""
+    decisions = {
+        "temporal": "2026-09-01:2026-09-30",
+        "grain": "promotions_vouchers",
+    }
+    result = synthesize_dynamic_dbt_model("我想查看促銷訂單量", decisions)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert result.spec_id == "SCHEMA-MART_PROMOTIONS_AND_VOUCHERS"
+    assert "total_promotional_orders" in result.data_preview.columns
+    assert "total_voucher_discount_eur" in result.data_preview.columns
+    assert "market_country" in result.data_preview.columns
+    assert len(result.data_preview) > 0

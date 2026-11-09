@@ -174,7 +174,27 @@ def _call_gemini_socratic(
             "3. LANGUAGE & LOCALIZATION:\n"
             "   - If user inquiry is in English, output question titles, explanations, and options strictly in professional English.\n"
             "   - If user inquiry is in Chinese, output in Traditional Chinese (繁體中文).\n\n"
-            "4. TEMPORAL & GRAIN AMBIGUITY:\n"
+            "4. PRODUCT CATALOG / INVENTORY INQUIRIES:\n"
+            "   - If user asks about the product catalog size or list (e.g. '我有多少產品', '有多少商品', 'how many products', 'catalog list', 'list products'):\n"
+            "     * set is_out_of_domain=false, needs_clarification=false\n"
+            "     * locked_decisions: {'grain': 'catalog_summary'}\n\n"
+            "5. TEMPORAL BOUNDARY & EXCEEDED WATERMARK:\n"
+            f"   - Physical lakehouse transaction watermark is strictly {watermark['min_date']} to {watermark['max_date']} (months: 2026-08, 2026-09, 2026-10).\n"
+            "   - If the user asks for months outside this watermark (e.g. '4月 / April', '6月 / June', '11月 / November / Black Friday', '12月 / December'):\n"
+            "     DO NOT SILENTLY DEFAULT TO OCTOBER! Instead, add a 'temporal' clarification question:\n"
+            "     * question_id: 'temporal'\n"
+            "     * dimension_type: 'temporal'\n"
+            "     * title: '時間範圍超出實體水浮標記 (Temporal Watermark Exceeded)' (or in English if query in English)\n"
+            f"     * explanation: '系統實體湖倉水位範圍為 {watermark['min_date']} 至 {watermark['max_date']} (最新月份為 2026-10)。您所查詢的期間尚未發生或無歷史資料。請問您希望將時間範圍調整至實體數據庫內已存在的月份？'\n"
+            "     * options:\n"
+            "       - id: '2026-10-01:2026-10-31', label: '📅 檢視已載入之最近月份 2026 年 10 月數據 (推薦)', value: '2026-10-01:2026-10-31'\n"
+            "       - id: '2026-09-01:2026-09-30', label: '📅 檢視 2026 年 9 月數據', value: '2026-09-01:2026-09-30'\n"
+            "       - id: '2026-08-03:2026-08-31', label: '📅 檢視 2026 年 8 月數據', value: '2026-08-03:2026-08-31'\n"
+            f"       - id: '{watermark['min_date']}:{watermark['max_date']}', label: '📊 檢視湖倉全期數據 ({watermark['min_date']} 至 {watermark['max_date']})', value: '{watermark['min_date']}:{watermark['max_date']}'\n\n"
+            "6. PROMOTIONS & VOUCHERS:\n"
+            "   - If user asks about promotions, vouchers, discounts, or promotional orders (e.g. '促銷', '折價券', '折扣', 'voucher', 'discount', '促銷訂單量', 'black friday'):\n"
+            "     * locked_decisions['grain'] = 'promotions_vouchers'\n\n"
+            "7. TEMPORAL & GRAIN AMBIGUITY:\n"
             "   - Temporal: If relative terms ('這個月', '本月', '最近', 'this month', 'recent') are used, add a 'temporal' question.\n"
             "   - Grain: If returns/refunds are mentioned without specifying grain, add a 'grain' question.\n"
             "   - If completely unambiguous and no clarification needed, set needs_clarification=false.\n\n"
@@ -259,11 +279,84 @@ def _call_gemini_socratic(
     return None, last_err
 
 
+def extract_temporal_intent(
+    text: str,
+    watermark: dict[str, Any],
+) -> tuple[str, str, bool, str | None]:
+    """Extract start_date, end_date, whether it exceeds physical watermark, and month label.
+
+    Returns:
+        (start_date, end_date, is_exceeded, identified_label)
+    """
+    lower = text.lower()
+    min_date = watermark.get("min_date", "2026-08-03")
+    max_date = watermark.get("max_date", "2026-10-31")
+
+    # Explicit ISO date pairs (e.g., 2026-09-01 ~ 2026-09-30)
+    iso_dates = re.findall(r"\d{4}-\d{2}-\d{2}", text)
+    if len(iso_dates) >= 2:
+        s, e = iso_dates[0], iso_dates[1]
+        is_exc = s < min_date or e > max_date
+        return s, e, is_exc, f"{s} ~ {e}"
+    elif len(iso_dates) == 1:
+        s = iso_dates[0]
+        is_exc = s < min_date or s > max_date
+        return s, s, is_exc, s
+
+    month_patterns = [
+        (["1月", "01月", "一月", "january", "jan"], "2026-01-01", "2026-01-31", "2026-01"),
+        (["2月", "02月", "二月", "february", "feb"], "2026-02-01", "2026-02-28", "2026-02"),
+        (["3月", "03月", "三月", "march", "mar"], "2026-03-01", "2026-03-31", "2026-03"),
+        (["4月", "04月", "四月", "april", "apr"], "2026-04-01", "2026-04-30", "2026-04"),
+        (["5月", "05月", "五月", "may"], "2026-05-01", "2026-05-31", "2026-05"),
+        (["6月", "06月", "六月", "june", "jun"], "2026-06-01", "2026-06-30", "2026-06"),
+        (["7月", "07月", "七月", "july", "jul"], "2026-07-01", "2026-07-31", "2026-07"),
+        (["8月", "08月", "八月", "august", "aug"], "2026-08-03", "2026-08-31", "2026-08"),
+        (["9月", "09月", "九月", "september", "sep"], "2026-09-01", "2026-09-30", "2026-09"),
+        (["10月", "十月", "october", "oct"], "2026-10-01", "2026-10-31", "2026-10"),
+        (["11月", "十一月", "november", "nov", "黑色星期五", "black friday"], "2026-11-01", "2026-11-30", "2026-11"),
+        (["12月", "十二月", "december", "dec"], "2026-12-01", "2026-12-31", "2026-12"),
+    ]
+
+    for keywords, s_date, e_date, label in month_patterns:
+        if any(kw in lower for kw in keywords):
+            is_exc = s_date < min_date or e_date > max_date
+            return s_date, e_date, is_exc, label
+
+    # Relative terms
+    relative_current = ["這個月", "本月", "當月", "current month", "this month"]
+    if any(kw in lower for kw in relative_current):
+        return watermark.get("current_month_start", "2026-10-01"), watermark.get("current_month_end", "2026-10-31"), False, watermark.get("current_month", "2026-10")
+
+    rolling_terms = ["最近30天", "滾動30天", "last 30 days", "rolling 30"]
+    if any(kw in lower for kw in rolling_terms):
+        return watermark.get("rolling_30_start", "2026-10-02"), watermark.get("rolling_30_end", "2026-10-31"), False, "Rolling 30 Days"
+
+    # Default full watermark span
+    return min_date, max_date, False, None
+
+
 def _deterministic_offline_socratic_analysis(
     goal_clean: str,
     watermark: dict[str, Any],
 ) -> SocraticSessionState:
     """Deterministic lakehouse grounding fallback reserved strictly for unit test suites."""
+    lower_goal = goal_clean.lower()
+
+    # 1. Product Catalog / SKU Count Inquiries
+    catalog_tokens = ["多少產品", "幾款產品", "產品清單", "商品型錄", "商品目錄", "how many products", "product catalog", "list products", "catalog"]
+    if any(t in lower_goal for t in catalog_tokens):
+        return SocraticSessionState(
+            user_goal=goal_clean,
+            is_out_of_domain=False,
+            needs_clarification=False,
+            questions=[],
+            locked_decisions={
+                "grain": "catalog_summary",
+                "temporal": f"{watermark['min_date']}:{watermark['max_date']}",
+            },
+        )
+
     matched_scenario, scenario_title = classify_schema_intent(goal_clean)
     if matched_scenario is None:
         return SocraticSessionState(
@@ -277,9 +370,8 @@ def _deterministic_offline_socratic_analysis(
 
     questions: list[SocraticClarificationQuestion] = []
     locked_decisions: dict[str, str] = {}
-    lower_goal = goal_clean.lower()
 
-    # Geographic / Market Ambiguity Detection
+    # 2. Geographic / Market Ambiguity Detection
     geo_tokens = [
         "歐洲", "european", "german", "germany", "德國", "spain", "西班牙",
         "austria", "奧地利", "france", "法國", "國別", "市場", "country", "market"
@@ -316,11 +408,47 @@ def _deterministic_offline_socratic_analysis(
         questions.append(q_geo)
         locked_decisions["geographic"] = pref_id
 
-    # Temporal Ambiguity Detection
-    temporal_tokens = ["這個月", "本月", "當月", "current month", "this month", "最近", "近期", "最新", "10月", "十月"]
-    has_temporal_ambiguity = any(t in lower_goal for t in temporal_tokens)
+    # 3. Temporal Extraction & Boundary Guardrail
+    s_date, e_date, is_exceeded, time_label = extract_temporal_intent(goal_clean, watermark)
 
-    if has_temporal_ambiguity:
+    relative_tokens = ["這個月", "本月", "當月", "current month", "this month", "最近", "近期", "最新"]
+    has_relative_temporal = any(t in lower_goal for t in relative_tokens)
+
+    if is_exceeded:
+        q_temp = SocraticClarificationQuestion(
+            question_id="temporal",
+            dimension_type="temporal",
+            title="時間範圍超出實體水浮標記 (Temporal Watermark Exceeded)",
+            explanation=(
+                f"系統實體湖倉水位範圍為 {watermark['min_date']} 至 {watermark['max_date']} (最新月份為 {watermark['current_month']})。"
+                f"您所查詢的「{time_label}」尚未發生或無歷史實體資料。請問您希望將時間範圍調整至實體數據庫內已存在的月份？"
+            ),
+            options=[
+                {
+                    "id": "2026-10-01:2026-10-31",
+                    "label": f"📅 檢視已載入之最近月份 2026 年 10 月數據 (推薦)",
+                    "value": f"{watermark['current_month_start']}:{watermark['current_month_end']}",
+                },
+                {
+                    "id": "2026-09-01:2026-09-30",
+                    "label": "📅 檢視 2026 年 9 月數據",
+                    "value": "2026-09-01:2026-09-30",
+                },
+                {
+                    "id": "2026-08-03:2026-08-31",
+                    "label": "📅 檢視 2026 年 8 月數據",
+                    "value": f"{watermark['min_date']}:2026-08-31",
+                },
+                {
+                    "id": f"{watermark['min_date']}:{watermark['max_date']}",
+                    "label": f"📊 檢視湖倉全期數據 ({watermark['min_date']} 至 {watermark['max_date']})",
+                    "value": f"{watermark['min_date']}:{watermark['max_date']}",
+                },
+            ],
+            selected_option_id="2026-10-01:2026-10-31",
+        )
+        questions.append(q_temp)
+    elif has_relative_temporal:
         q_temp = SocraticClarificationQuestion(
             question_id="temporal",
             dimension_type="temporal",
@@ -344,14 +472,22 @@ def _deterministic_offline_socratic_analysis(
             selected_option_id="current_month",
         )
         questions.append(q_temp)
+    elif time_label:
+        # User specified an in-watermark period explicitly (e.g. 9月 or 10月)
+        locked_decisions["temporal"] = f"{s_date}:{e_date}"
     else:
         locked_decisions["temporal"] = f"{watermark['min_date']}:{watermark['max_date']}"
 
-    # Grain & Entity Ambiguity Detection
+    # 4. Grain & Entity Ambiguity Detection
+    promo_tokens = ["促銷", "折價券", "折扣", "voucher", "discount", "black friday", "黑色星期五", "促銷訂單量"]
+    has_promo_intent = any(t in lower_goal for t in promo_tokens)
+
     record_tokens = ["紀錄", "明細", "流水", "log", "record", "event", "退款紀錄", "退貨單", "退款"]
     has_record_intent = any(t in lower_goal for t in record_tokens)
 
-    if has_record_intent and "return" in matched_scenario:
+    if has_promo_intent:
+        locked_decisions["grain"] = "promotions_vouchers"
+    elif has_record_intent and "return" in matched_scenario:
         q_grain = SocraticClarificationQuestion(
             question_id="grain",
             dimension_type="grain",
@@ -375,7 +511,6 @@ def _deterministic_offline_socratic_analysis(
     elif matched_scenario == "bulk_returns" and not has_record_intent:
         locked_decisions["grain"] = "sku_packaging_diagnosis"
     elif matched_scenario == "category_margin":
-        # Check if user asks for revenue summary vs margin dilution
         if any(w in lower_goal for w in ["營業額", "營收", "銷售額", "revenue"]):
             locked_decisions["grain"] = "monthly_revenue"
         else:
@@ -483,29 +618,25 @@ def synthesize_dynamic_dbt_model(
     """Dynamically compile dbt SQL model, schema contract, and execute physical dry-run."""
     custom_notes = [v[7:].strip() for v in decisions.values() if isinstance(v, str) and v.startswith("custom:")]
     custom_str = " ".join(custom_notes).strip()
+    combined_query = f"{user_goal} {custom_str}".lower()
 
-    # 1. Parse Temporal Decision
-    temporal_val = decisions.get("temporal", "2026-08-03:2026-10-31")
+    watermark = get_lakehouse_watermark(reflection)
+
+    # 1. Parse Temporal Decision with Zero-Drift Granularity
+    temporal_val = decisions.get("temporal", f"{watermark['min_date']}:{watermark['max_date']}")
     if temporal_val.startswith("custom:"):
-        cust = temporal_val[7:].lower()
-        if any(w in cust for w in ["9月", "九月", "2026-09", "september"]):
-            start_date, end_date = "2026-09-01", "2026-09-30"
-        elif any(w in cust for w in ["8月", "八月", "2026-08", "august"]):
-            start_date, end_date = "2026-08-03", "2026-08-31"
-        elif any(w in cust for w in ["10月", "十月", "2026-10", "october"]):
-            start_date, end_date = "2026-10-01", "2026-10-31"
-        else:
-            iso_dates = re.findall(r"\d{4}-\d{2}-\d{2}", cust)
-            if len(iso_dates) >= 2:
-                start_date, end_date = iso_dates[0], iso_dates[1]
-            elif len(iso_dates) == 1:
-                start_date, end_date = iso_dates[0], "2026-10-31"
-            else:
-                start_date, end_date = "2026-10-01", "2026-10-31"
+        cust = temporal_val[7:].strip()
+        s_date, e_date, _, _ = extract_temporal_intent(cust, watermark)
+        start_date, end_date = s_date, e_date
     elif ":" in temporal_val:
         start_date, end_date = temporal_val.split(":", 1)
     else:
-        start_date, end_date = "2026-08-03", "2026-10-31"
+        # Check if user query or custom note has specific month
+        s_date, e_date, _, t_lbl = extract_temporal_intent(combined_query, watermark)
+        if t_lbl:
+            start_date, end_date = s_date, e_date
+        else:
+            start_date, end_date = watermark["min_date"], watermark["max_date"]
 
     geo_val = decisions.get("geographic")
     if geo_val and geo_val.startswith("custom:"):
@@ -519,128 +650,236 @@ def synthesize_dynamic_dbt_model(
         else:
             geo_val = "ALL_EU"
 
-    grain_val = decisions.get("grain", "monthly_revenue" if geo_val else "return_event")
+    grain_val = decisions.get("grain", "")
 
-    # 2. Dynamic Model Synthesis by Geographic Market or Grain
-    if geo_val:
-        if geo_val == "ALL_EU":
-            model_name = "mart_european_market_revenue"
-            scenario_title = f"All European Markets Revenue Summary ({start_date} ~ {end_date})"
-            target_grain = "European Market x Product SKU"
-            upstream_tables = ["dim_products", "fct_order_items", "fct_orders", "dim_customers"]
-            dbt_sql = (
-                f"-- Model: {model_name}.sql\n"
-                "{{ config(\n"
-                "    materialized='table',\n"
-                "    schema='gold_marts',\n"
-                "    tags=['revenue', 'market', 'europe', 'governed']\n"
-                ") }}\n\n"
-                "WITH customer_orders AS (\n"
-                "    SELECT\n"
-                "        o.order_id,\n"
-                "        c.market_country\n"
-                "    FROM {{ ref('fct_orders') }} o\n"
-                "    JOIN {{ ref('dim_customers') }} c USING (customer_id)\n"
-                ")\n"
-                "SELECT\n"
-                "    p.product_id,\n"
-                "    p.product_name,\n"
-                "    co.market_country,\n"
-                "    COUNT(DISTINCT i.order_id) AS total_orders,\n"
-                "    SUM(i.quantity_sold) AS total_units_sold,\n"
-                "    ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,\n"
-                "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur\n"
-                "FROM {{ ref('fct_order_items') }} i\n"
-                "JOIN customer_orders co USING (order_id)\n"
-                "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
-                f"WHERE i.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
-                "GROUP BY p.product_id, p.product_name, co.market_country\n"
-                "ORDER BY co.market_country ASC, gross_revenue_eur DESC;"
-            )
-            schema_yaml = (
-                "version: 2\n\n"
-                "models:\n"
-                f"  - name: {model_name}\n"
-                "    description: 'All active European customer markets revenue broken down by product SKU.'\n"
-                "    meta:\n"
-                "      owner: 'finance_analytics'\n"
-                "      contains_pii: false\n"
-                "      gdpr_compliant: true\n"
-                "      data_layer: 'gold'\n"
-                "    columns:\n"
-                "      - name: product_id\n"
-                "        data_type: varchar\n"
-                "        tests: [not_null]\n"
-                "      - name: product_name\n"
-                "        data_type: varchar\n"
-                "        tests: [not_null]\n"
-                "      - name: market_country\n"
-                "        data_type: varchar\n"
-                "        tests: [not_null]\n"
-                "      - name: gross_revenue_eur\n"
-                "        data_type: numeric\n"
-                "        tests: [not_null]\n"
-            )
-        else:
-            country_label = "German" if geo_val == "DE" else ("Austrian" if geo_val == "AT" else "French")
-            model_name = f"mart_{geo_val.lower()}_market_revenue"
-            scenario_title = f"{country_label} Market Revenue Summary ({geo_val}) ({start_date} ~ {end_date})"
-            target_grain = f"Market ({geo_val}) x Product SKU"
-            upstream_tables = ["dim_products", "fct_order_items", "fct_orders", "dim_customers"]
-            dbt_sql = (
-                f"-- Model: {model_name}.sql\n"
-                "{{ config(\n"
-                "    materialized='table',\n"
-                "    schema='gold_marts',\n"
-                f"    tags=['revenue', 'market', '{geo_val.lower()}', 'governed']\n"
-                ") }}\n\n"
-                "WITH customer_orders AS (\n"
-                "    SELECT\n"
-                "        o.order_id,\n"
-                "        c.market_country\n"
-                "    FROM {{ ref('fct_orders') }} o\n"
-                "    JOIN {{ ref('dim_customers') }} c USING (customer_id)\n"
-                f"    WHERE c.market_country = '{geo_val}'\n"
-                ")\n"
-                "SELECT\n"
-                "    p.product_id,\n"
-                "    p.product_name,\n"
-                f"    '{geo_val}' AS market_country,\n"
-                "    COUNT(DISTINCT i.order_id) AS total_orders,\n"
-                "    SUM(i.quantity_sold) AS total_units_sold,\n"
-                "    ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,\n"
-                "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur\n"
-                "FROM {{ ref('fct_order_items') }} i\n"
-                "JOIN customer_orders co USING (order_id)\n"
-                "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
-                f"WHERE i.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
-                "GROUP BY p.product_id, p.product_name\n"
-                "ORDER BY gross_revenue_eur DESC;"
-            )
-            schema_yaml = (
-                "version: 2\n\n"
-                "models:\n"
-                f"  - name: {model_name}\n"
-                f"    description: 'Governed revenue performance broken down by product SKU for {country_label} ({geo_val}) market.'\n"
-                "    meta:\n"
-                "      owner: 'finance_analytics'\n"
-                "      contains_pii: false\n"
-                "      gdpr_compliant: true\n"
-                "      data_layer: 'gold'\n"
-                "    columns:\n"
-                "      - name: product_id\n"
-                "        data_type: varchar\n"
-                "        tests: [not_null]\n"
-                "      - name: product_name\n"
-                "        data_type: varchar\n"
-                "        tests: [not_null]\n"
-                "      - name: market_country\n"
-                "        data_type: varchar\n"
-                "        tests: [not_null]\n"
-                "      - name: gross_revenue_eur\n"
-                "        data_type: numeric\n"
-                "        tests: [not_null]\n"
-            )
+    # 2. Dynamic Model Synthesis by Intent Routing
+    catalog_keywords = ["多少產品", "幾款產品", "產品清單", "商品型錄", "商品目錄", "how many products", "product catalog", "list products", "catalog"]
+    is_catalog_intent = grain_val == "catalog_summary" or any(k in combined_query for k in catalog_keywords)
+
+    promo_keywords = ["促銷", "折價券", "折扣", "voucher", "discount", "black friday", "黑色星期五", "促銷訂單量"]
+    is_promo_intent = grain_val == "promotions_vouchers" or any(k in combined_query for k in promo_keywords)
+
+    if is_catalog_intent:
+        model_name = "mart_product_catalog"
+        scenario_title = "Product Catalog & SKU Master Inventory"
+        target_grain = "Product SKU"
+        upstream_tables = ["dim_products"]
+        dbt_sql = (
+            f"-- Model: {model_name}.sql\n"
+            "{{ config(\n"
+            "    materialized='table',\n"
+            "    schema='gold_marts',\n"
+            "    tags=['catalog', 'products', 'inventory', 'governed']\n"
+            ") }}\n\n"
+            "SELECT\n"
+            "    p.product_id,\n"
+            "    p.product_name,\n"
+            "    p.category_name,\n"
+            "    p.packaging_size,\n"
+            "    p.unit_price_eur AS price_eur,\n"
+            "    p.unit_cost_eur AS cost_eur,\n"
+            "    p.stock_on_hand,\n"
+            "    p.is_available\n"
+            "FROM {{ ref('dim_products') }} p\n"
+            "ORDER BY p.product_id ASC;"
+        )
+        schema_yaml = (
+            "version: 2\n\n"
+            "models:\n"
+            f"  - name: {model_name}\n"
+            "    description: 'Governed product SKU catalog and inventory specifications.'\n"
+            "    meta:\n"
+            "      owner: 'catalog_operations'\n"
+            "      contains_pii: false\n"
+            "      gdpr_compliant: true\n"
+            "      data_layer: 'gold'\n"
+            "    columns:\n"
+            "      - name: product_id\n"
+            "        data_type: varchar\n"
+            "        tests: [unique, not_null]\n"
+            "      - name: product_name\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: category_name\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+        )
+
+    elif geo_val and geo_val in ["DE", "AT", "FR"]:
+        country_label = "German" if geo_val == "DE" else ("Austrian" if geo_val == "AT" else "French")
+        model_name = f"mart_{geo_val.lower()}_market_revenue"
+        scenario_title = f"{country_label} Market Revenue Summary ({geo_val}) ({start_date} ~ {end_date})"
+        target_grain = f"Market ({geo_val}) x Product SKU"
+        upstream_tables = ["dim_products", "fct_order_items", "fct_orders", "dim_customers"]
+        dbt_sql = (
+            f"-- Model: {model_name}.sql\n"
+            "{{ config(\n"
+            "    materialized='table',\n"
+            "    schema='gold_marts',\n"
+            f"    tags=['revenue', 'market', '{geo_val.lower()}', 'governed']\n"
+            ") }}\n\n"
+            "WITH customer_orders AS (\n"
+            "    SELECT\n"
+            "        o.order_id,\n"
+            "        c.market_country\n"
+            "    FROM {{ ref('fct_orders') }} o\n"
+            "    JOIN {{ ref('dim_customers') }} c USING (customer_id)\n"
+            f"    WHERE c.market_country = '{geo_val}'\n"
+            ")\n"
+            "SELECT\n"
+            "    p.product_id,\n"
+            "    p.product_name,\n"
+            f"    '{geo_val}' AS market_country,\n"
+            "    COUNT(DISTINCT i.order_id) AS total_orders,\n"
+            "    SUM(i.quantity_sold) AS total_units_sold,\n"
+            "    ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,\n"
+            "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur\n"
+            "FROM {{ ref('fct_order_items') }} i\n"
+            "JOIN customer_orders co USING (order_id)\n"
+            "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
+            f"WHERE i.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
+            "GROUP BY p.product_id, p.product_name\n"
+            "ORDER BY gross_revenue_eur DESC;"
+        )
+        schema_yaml = (
+            "version: 2\n\n"
+            "models:\n"
+            f"  - name: {model_name}\n"
+            f"    description: 'Governed revenue performance broken down by product SKU for {country_label} ({geo_val}) market.'\n"
+            "    meta:\n"
+            "      owner: 'finance_analytics'\n"
+            "      contains_pii: false\n"
+            "      gdpr_compliant: true\n"
+            "      data_layer: 'gold'\n"
+            "    columns:\n"
+            "      - name: product_id\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: product_name\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: market_country\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: gross_revenue_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+        )
+
+    elif is_promo_intent:
+        model_name = "mart_promotions_and_vouchers"
+        scenario_title = f"Promotional Orders & Voucher Performance ({start_date} ~ {end_date})"
+        target_grain = "Market Country"
+        upstream_tables = ["fct_orders"]
+        dbt_sql = (
+            f"-- Model: {model_name}.sql\n"
+            "{{ config(\n"
+            "    materialized='table',\n"
+            "    schema='gold_marts',\n"
+            "    tags=['marketing', 'promotions', 'discounts', 'governed']\n"
+            ") }}\n\n"
+            "WITH promo_orders AS (\n"
+            "    SELECT\n"
+            "        o.order_id,\n"
+            "        o.order_date,\n"
+            "        o.market_country,\n"
+            "        o.discount_eur,\n"
+            "        o.order_gross_eur,\n"
+            "        o.order_net_eur\n"
+            "    FROM {{ ref('fct_orders') }} o\n"
+            "    WHERE o.discount_eur > 0\n"
+            ")\n"
+            "SELECT\n"
+            "    po.market_country,\n"
+            "    COUNT(DISTINCT po.order_id) AS total_promotional_orders,\n"
+            "    ROUND(SUM(po.discount_eur), 2) AS total_voucher_discount_eur,\n"
+            "    ROUND(SUM(po.order_gross_eur), 2) AS gross_revenue_eur,\n"
+            "    ROUND(SUM(po.order_net_eur), 2) AS net_revenue_eur\n"
+            "FROM promo_orders po\n"
+            f"WHERE po.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
+            "GROUP BY po.market_country\n"
+            "ORDER BY total_promotional_orders DESC, gross_revenue_eur DESC;"
+        )
+        schema_yaml = (
+            "version: 2\n\n"
+            "models:\n"
+            f"  - name: {model_name}\n"
+            "    description: 'Promotional discount redemption volume and order revenue by market.'\n"
+            "    meta:\n"
+            "      owner: 'marketing_analytics'\n"
+            "      contains_pii: false\n"
+            "      gdpr_compliant: true\n"
+            "      data_layer: 'gold'\n"
+            "    columns:\n"
+            "      - name: market_country\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: total_promotional_orders\n"
+            "        data_type: integer\n"
+            "        tests: [not_null]\n"
+            "      - name: total_voucher_discount_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+        )
+
+    elif geo_val == "ALL_EU":
+        model_name = "mart_european_market_revenue"
+        scenario_title = f"All European Markets Revenue Summary ({start_date} ~ {end_date})"
+        target_grain = "European Market x Product SKU"
+        upstream_tables = ["dim_products", "fct_order_items", "fct_orders", "dim_customers"]
+        dbt_sql = (
+            f"-- Model: {model_name}.sql\n"
+            "{{ config(\n"
+            "    materialized='table',\n"
+            "    schema='gold_marts',\n"
+            "    tags=['revenue', 'market', 'europe', 'governed']\n"
+            ") }}\n\n"
+            "WITH customer_orders AS (\n"
+            "    SELECT\n"
+            "        o.order_id,\n"
+            "        c.market_country\n"
+            "    FROM {{ ref('fct_orders') }} o\n"
+            "    JOIN {{ ref('dim_customers') }} c USING (customer_id)\n"
+            ")\n"
+            "SELECT\n"
+            "    p.product_id,\n"
+            "    p.product_name,\n"
+            "    co.market_country,\n"
+            "    COUNT(DISTINCT i.order_id) AS total_orders,\n"
+            "    SUM(i.quantity_sold) AS total_units_sold,\n"
+            "    ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,\n"
+            "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur\n"
+            "FROM {{ ref('fct_order_items') }} i\n"
+            "JOIN customer_orders co USING (order_id)\n"
+            "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
+            f"WHERE i.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
+            "GROUP BY p.product_id, p.product_name, co.market_country\n"
+            "ORDER BY gross_revenue_eur DESC;"
+        )
+        schema_yaml = (
+            "version: 2\n\n"
+            "models:\n"
+            f"  - name: {model_name}\n"
+            "    description: 'All active European customer markets revenue broken down by product SKU.'\n"
+            "    meta:\n"
+            "      owner: 'finance_analytics'\n"
+            "      contains_pii: false\n"
+            "      gdpr_compliant: true\n"
+            "      data_layer: 'gold'\n"
+            "    columns:\n"
+            "      - name: product_id\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: product_name\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: market_country\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: gross_revenue_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+        )
     elif grain_val == "return_event":
         model_name = "mart_monthly_product_refunds"
         scenario_title = f"Monthly Product Refund Event Log ({start_date} ~ {end_date})"
@@ -916,7 +1155,7 @@ def synthesize_dynamic_dbt_model(
         {
             "step": "Socratic Clarification",
             "status": "COMPLETED",
-            "detail": f"Anchored: {start_date} ~ {end_date} | Grain: {target_grain}" + (f" | 自訂補充: '{custom_str}'" if custom_str else ""),
+            "detail": f"Anchored: {start_date} ~ {end_date} | Grain: {target_grain}" + (f" | Custom Note: '{custom_str}'" if custom_str else ""),
         },
         {
             "step": "Schema Reflection",
