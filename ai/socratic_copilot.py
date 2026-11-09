@@ -1976,13 +1976,13 @@ def summarize_socratic_requirements(
         for h in reversed(chat_history):
             if h.get("role") == "assistant":
                 a_norm = re.sub(r"\s+", "", h.get("content", "").lower())
-                if any(w in a_norm for w in ["水印區間", "2026-08-03至2026-10-31", "全期數據", "全期間"]):
+                if any(w in a_norm for w in ["水印區間", "全期", "2026-08-03至2026-10-31", "2026-08-03:2026-10-31"]):
                     target_month_consensus = "FULL"
                     break
                 elif any(w in a_norm for w in ["鎖定在2026年9月", "2026年9月", "9月份", "2026-09"]):
                     target_month_consensus = "2026-09"
                     break
-                elif any(w in a_norm for w in ["鎖定在2026年8月", "2026年8月", "8月份", "最早月份", "2026-08"]):
+                elif any(w in a_norm for w in ["鎖定在2026年8月", "2026年8月", "8月份", "最早月份"]):
                     target_month_consensus = "2026-08"
                     break
                 elif any(w in a_norm for w in ["2026年10月", "10月份", "最新月份", "2026-10"]):
@@ -1994,7 +1994,7 @@ def summarize_socratic_requirements(
     if target_month_consensus == "FULL":
         s_date = watermark["min_date"]
         e_date = watermark["max_date"]
-        temporal_provenance_label = f" [已依對話共識鎖定為資料庫水印全期 ({s_date} 至 {e_date})]"
+        temporal_provenance_label = f" [已依對話共識鎖定為資料庫全期 ({s_date} 至 {e_date})]"
     elif target_month_consensus == "2026-09":
         s_date = "2026-09-01"
         e_date = "2026-09-30"

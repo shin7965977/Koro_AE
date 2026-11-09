@@ -260,10 +260,11 @@ def build_koro_medallion_data(
                 take = min(r_units, rem_in_reason)
                 if take > 0:
                     r_name = reason_counts[cur_r_idx][0]
+                    assigned_ret_order = f"SW6-{10001 + d_idx * 110 + (d_idx % len(orders_for_day))}"
                     return_rows.append(
                         {
                             "return_id": f"RET-2026-{ret_seq:05d}",
-                            "order_id": f"SW6-{10001 + d_idx * 110}",
+                            "order_id": assigned_ret_order,
                             "customer_id": customers_data[(d_idx + int(pid[-1:])) % len(customers_data)]["customer_id"],
                             "return_date": cur_date,
                             "product_id": pid,

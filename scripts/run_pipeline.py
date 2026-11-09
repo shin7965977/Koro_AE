@@ -18,6 +18,8 @@ from datetime import datetime
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 
 def run_cmd(cmd: list[str], cwd: Path | str, stage_name: str) -> None:
