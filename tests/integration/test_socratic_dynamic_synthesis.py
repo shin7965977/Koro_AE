@@ -472,4 +472,49 @@ def test_dialogue_causes_distribution_syntax_triggers_return_reasons() -> None:
     assert (result.data_preview["market_country"] == "DE").all()
 
 
+def test_explicit_temporal_consensus_locking_august_overrides_october() -> None:
+    """Verify that dialogue consensus on August (2026-08) explicitly overrides initial October selection."""
+    initial_goal = "我想分析產品價格跟營收的關係，還有退貨情況"
+    default_decisions = {
+        "temporal": "2026-10-01:2026-10-31",  # User initially had October selected
+        "geographic": "ALL_EU",
+    }
+    chat_history = [
+        {"role": "user", "content": "德國,七月"},
+        {"role": "assistant", "content": "水浮標記範圍為 2026-08-03 至 2026-10-31，沒有 7 月。建議改看 8 月份，您覺得合適嗎？"},
+        {"role": "user", "content": "可以"},
+        {"role": "assistant", "content": "太棒了！已確定鎖定在起始月份 2026年8月。"},
+    ]
+
+    memo = summarize_socratic_requirements(
+        user_goal=initial_goal,
+        decisions=default_decisions,
+        chat_history=chat_history,
+    )
+
+    # Invariants Check: Explicit locking must set start and end to August, and market to DE (never TW!)
+    assert memo["start_date"] == "2026-08-03"
+    assert memo["end_date"] == "2026-08-31"
+    assert "2026-08-03" in memo["date_range"]
+    assert "已依對話共識鎖定" in memo["date_range"]
+    assert memo["market_country"] == "DE"
+    assert memo["market_country"] != "TW"
+
+    # Synthesize with explicit lock
+    signed_decisions = dict(default_decisions)
+    signed_decisions["start_date"] = memo["start_date"]
+    signed_decisions["end_date"] = memo["end_date"]
+    signed_decisions["geographic"] = memo["market_country"]
+    signed_decisions["custom_chat_notes"] = f"custom:{memo.get('chat_context_notes')}"
+
+    result = synthesize_dynamic_dbt_model(initial_goal, signed_decisions)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert "2026-08-03" in result.dbt_sql
+    assert "2026-08-31" in result.dbt_sql
+    assert "2026-10-01" not in result.dbt_sql
+    assert (result.data_preview["market_country"] == "DE").all()
+
+
+
 

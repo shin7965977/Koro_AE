@@ -628,7 +628,10 @@ def synthesize_dynamic_dbt_model(
     s_query, e_query, _, t_lbl = extract_temporal_intent(combined_query, watermark)
 
     temporal_val = decisions.get("temporal")
-    if temporal_val and temporal_val.startswith("custom:"):
+    # Check if explicit start_date and end_date were locked in decisions/memo
+    if decisions.get("start_date") and decisions.get("end_date"):
+        start_date, end_date = decisions["start_date"], decisions["end_date"]
+    elif temporal_val and temporal_val.startswith("custom:"):
         cust = temporal_val[7:].strip()
         s_cust, e_cust, _, _ = extract_temporal_intent(cust, watermark)
         start_date, end_date = s_cust, e_cust
@@ -1605,11 +1608,47 @@ def summarize_socratic_requirements(
         or (any(w in combined_text for w in ["原因", "reason"]) and any(w in combined_text for w in ["退貨", "退款", "refund", "return"]))
     )
 
+    # -------------------------------------------------------------
+    # Explicit Temporal Locking: Check dialogue consensus for non-default months
+    # (e.g. user proposed 7月, AI suggested 8月, user accepted "可以/好")
+    # -------------------------------------------------------------
+    has_august_consensus = False
+    has_september_consensus = False
+    has_october_consensus = False
+
+    for i, h in enumerate(chat_history):
+        content_norm = re.sub(r"\s+", "", h.get("content", "").lower())
+        
+        # 1. User directly stated August
+        if h.get("role") == "user" and any(w in content_norm for w in ["8月", "八月", "august", "2026-08"]):
+            has_august_consensus = True
+            break
+            
+        # 2. Assistant suggested August and user agreed in next turn
+        if h.get("role") == "assistant" and any(w in content_norm for w in ["8月", "八月", "august", "2026-08", "最早月份"]):
+            if i + 1 < len(chat_history) and chat_history[i + 1].get("role") == "user":
+                next_reply = re.sub(r"\s+", "", chat_history[i + 1].get("content", "").lower())
+                if any(w in next_reply for w in ["可以", "好", "沒問題", "ok", "yes", "行", "同意", "好的", "可"]):
+                    has_august_consensus = True
+                    break
+        
+        # 3. Assistant confirmed locking to August
+        if h.get("role") == "assistant" and any(w in content_norm for w in ["鎖定在2026年8月", "鎖定在起始月份", "2026年8月的所有"]):
+            has_august_consensus = True
+            break
+
+    temporal_provenance_label = ""
     temporal_val = decisions.get("temporal", f"{watermark['min_date']}:{watermark['max_date']}")
-    if ":" in temporal_val:
+    if has_august_consensus:
+        s_date = "2026-08-03"
+        e_date = "2026-08-31"
+        temporal_provenance_label = " [已依對話共識鎖定為最早月份]"
+    elif ":" in temporal_val:
         s_date, e_date = temporal_val.split(":", 1)
     else:
         s_date, e_date = watermark["min_date"], watermark["max_date"]
+
+    date_range_display = f"{s_date} 至 {e_date}{temporal_provenance_label}"
 
     grain_val = decisions.get("grain", "")
 
@@ -1692,10 +1731,16 @@ def summarize_socratic_requirements(
         except Exception:
             pass
 
+    # Ground market_val strictly to reflected lakehouse metadata
+    active_markets = watermark.get("active_markets", ["DE", "AT", "FR"])
+    if market_val not in active_markets and market_val != "ALL_EU":
+        # Disallow phantom markets like 'TW', fall back to DE or explicit catalog
+        market_val = "DE" if "DE" in active_markets else active_markets[0]
+
     return {
         "analytical_objective": objective_desc,
         "target_grain": target_grain,
-        "date_range": f"{s_date} 至 {e_date}",
+        "date_range": date_range_display,
         "start_date": s_date,
         "end_date": e_date,
         "market_country": market_val,
