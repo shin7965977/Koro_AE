@@ -3,6 +3,7 @@
 [![Live Demo](https://img.shields.io/badge/Streamlit_App-Live_Demo-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://koroae-emnrmedur9bkudgaygri4f.streamlit.app/)
 [![dbt](https://img.shields.io/badge/dbt--core-1.12.6-orange.svg?style=for-the-badge&logo=dbt&logoColor=white)](https://www.getdbt.com/)
 [![DuckDB](https://img.shields.io/badge/DuckDB-In--Process_OLAP-FFF000.svg?style=for-the-badge&logo=duckdb&logoColor=black)](https://duckdb.org/)
+[![Elementary](https://img.shields.io/badge/Elementary-Data_Observability-FF4081.svg?style=for-the-badge&logo=elementary&logoColor=white)](https://www.elementary-data.com/)
 [![Langfuse](https://img.shields.io/badge/Langfuse-LLM_Observability-000000.svg?style=for-the-badge&logo=langfuse&logoColor=white)](https://cloud.langfuse.com/)
 
 ---
@@ -15,7 +16,21 @@ This production-grade Lakehouse POC bridges the gap between commercial stakehold
 1. **Stakeholders Inquire in Natural Language**: Commercial teams ask nuanced questions (e.g., *"How does 1kg bulk packaging affect return rates across DE vs. FR markets?"*) via a guided Socratic clarification workflow.
 2. **Context-Engineered Semantic Mapping**: Instead of guessing SQL, the Copilot dynamically inspects physical DuckDB metadata, conformed Kimball star-schema grains (`fct_orders`, `fct_order_items`, `fct_returns`, `dim_products`), and active dimension values to prevent phantom filters.
 3. **Automated dbt Contract & SQL Compilation**: The system compiles a signed specification memo into a fully governed dbt model (`.sql`) alongside its version-controlled data contract (`schema.yml`), validated by live DuckDB dry-runs before deployment.
-4. **End-to-End Observability with Langfuse**: Every step—from dialogue intent parsing to AST compilation and dry-run execution—is instrumented with real-time Langfuse tracing and automated semantic-grounding scoring.
+4. **End-to-End Observability with Elementary & Langfuse**: Data quality, volume anomalies, and schema freshness are continuously monitored via embedded **Elementary Data Observability**, while LLM reasoning and semantic grounding are instrumented with **Langfuse** tracing.
+
+---
+
+## 🎯 Scope Matrix: Current POC vs. Future Production Roadmap
+
+To uphold the **Zero-Facade Standard**, this repository strictly distinguishes between what is implemented and physically verified in this POC versus the production scaling architecture for an enterprise deployment:
+
+| Domain | Current POC Scope (Implemented & Governed) | Future Production Roadmap (Enterprise Scale) |
+| :--- | :--- | :--- |
+| **Storage & OLAP Engine** | **DuckDB (In-Process OLAP)** + local Parquet storage (`data/bronze/*.parquet`, `data/koro_lakehouse.duckdb`).<br>• Zero cloud cost, single-node high performance.<br>• Verified dimensional modeling and Kimball star-schema feasibility. | **Cloud Data Warehouse Migration**: Seamless cutover to **Snowflake / BigQuery / Databricks** via standard dbt adapter swap (`dbt-snowflake` / `dbt-bigquery`). Object storage on AWS S3 / GCS. |
+| **Data Quality & Observability** | **Elementary Data + dbt Tests + Langfuse**:<br>• Embedded **Elementary Data Observability Report** (table health, test history, freshness/volume anomalies).<br>• 18+ automated dbt contract tests (`unique`, `not_null`, `relationships`) with 100% PASS.<br>• Real-time **Langfuse** LLM tracing & semantic grounding evaluation. | **Real-time Alerting & Remediation**:<br>• Direct integration with **Slack / PagerDuty Webhooks** for instant incident alerting.<br>• Automated data drift detection and self-healing / rollback pipelines. |
+| **Semantic & Context Layer** | **Physical Metadata Reflection & YAML Rules**:<br>• `DatabaseReflectionService` dynamically reflects physical DuckDB tables.<br>• `semantic/business_rules.yaml` governs KPI formulas & contract mappings.<br>• `metadata/business_glossary.yaml` standardizes bulk packaging & defect definitions. | **Enterprise Semantic Layer & Knowledge Graph**:<br>• Adoption of **dbt Semantic Layer (MetricFlow)** or Cube.<br>• Optional **NetworkX / Neo4j Knowledge Graph** for multi-hop ontology traversal across tens of thousands of SKUs. |
+| **Transformation & Orchestration** | **dbt-duckdb 3-Tier Medallion Pipeline**:<br>• Bronze Sources $\rightarrow$ Silver Facts/Dims $\rightarrow$ Gold Marts.<br>• Local automated orchestrator script (`scripts/run_pipeline.py`).<br>• CI automation via GitHub Actions (`.github/workflows/ci.yml`). | **Production Workflow Orchestration**:<br>• Enterprise DAG scheduling via **Apache Airflow / Dagster / dbt Cloud**.<br>• Hourly/daily incremental model execution (`incremental_strategy='merge'`). |
+| **AI Copilot & Socratic Governance** | **Zero-Facade Socratic Compiler**:<br>• Multi-turn requirement clarification, entity boundary enforcement.<br>• Dynamic dbt Model + Data Contract (`schema.yml`) generation.<br>• Pre-deployment physical DuckDB Dry-Run validation. | **GitOps Automated PR & Slack Bot**:<br>• AI commits compiled dbt models directly to GitHub Pull Requests.<br>• Pre-commit CI validation via `dbt-checkpoint`.<br>• Bidirectional Slack/Teams conversational copilot. |
 
 ---
 
@@ -40,15 +55,21 @@ flowchart LR
         B3[(Gold / Governed Marts)]
     end
 
-    subgraph Semantic [Semantic & Knowledge Layer]
-        K1[Taxonomy & Ontology]
-        K2[Metrics & Business Rules]
-        K3[NetworkX Knowledge Graph]
+    subgraph Semantic [Semantic & Context Layer]
+        K1[Taxonomy: dim_categories / dim_products]
+        K2[Metrics & Rules: semantic/business_rules.yaml]
+        K3[Catalog & Glossary: metadata/*.yaml]
+    end
+
+    subgraph Observability [Observability & Quality Layer]
+        O1[Elementary Data Observability]
+        O2[18+ dbt Contract Tests]
+        O3[Langfuse LLM Telemetry]
     end
 
     subgraph Consumption [Consumption Layer]
-        C1[Streamlit BI Dashboard]
-        C2[AI Analytics Assistant / MCP]
+        C1[Streamlit BI Cockpit & Looker Studio]
+        C2[Socratic AI AE Copilot]
     end
 
     Sources --> Ingestion
@@ -56,8 +77,11 @@ flowchart LR
     B1 -->|dbt clean & deduplicate| B2
     B2 -->|dbt dimensional model| B3
     B3 --> Semantic
+    B3 --> Observability
     B3 --> C1
     Semantic --> C2
+    Observability --> C1
+    Observability --> C2
 ```
 
 ---
@@ -65,20 +89,18 @@ flowchart LR
 ## 📁 Repository Structure
 
 ```
-├── .github/workflows/ci.yml     # Automated CI testing and validation
-├── ai/                          # AI Assistant, tools, LLM clients & prompts
+├── .github/workflows/ci.yml     # Automated CI testing and validation pipeline
+├── ai/                          # Socratic Copilot, dynamic dbt compiler & Langfuse telemetry
 ├── contracts/                   # Data contract specifications (YAML)
 ├── data/                        # Physical Lakehouse storage (bronze/*.parquet, duckdb)
-├── dbt_koro/                    # dbt project (Bronze, Silver, Gold models & tests)
-├── docs/                        # Specifications, mappings, and data dictionaries
+├── dbt_koro/                    # dbt project (Bronze, Silver, Gold models & 18+ contract tests)
+├── docs/                        # Architecture specs, Elementary report & LookML models
 ├── evaluation/                  # Benchmark questions & AI evaluation framework
-├── ingestion/                   # Python scrapers, Shopware API clients, validators
-├── knowledge/                   # Taxonomy, ontology definitions & graph builders
-├── metadata/                    # Data catalog and business glossary
-├── monitoring/                  # Data quality tests & LLM observability
+├── ingestion/                   # Shopware extractors, Parquet writers & Pydantic validators
+├── metadata/                    # Data catalog and business glossary definitions
 ├── scripts/                     # Pipeline orchestrators (run_pipeline.py)
-├── semantic/                    # Metric definitions and business rules
-├── tests/                       # Unit, integration, and regression tests
+├── semantic/                    # Metric definitions and business rules (YAML)
+├── tests/                       # Unit, integration, and regression test suites (70+ tests)
 ├── .env.example                 # Environment variable templates
 ├── requirements.txt             # Python dependencies
 └── README.md                    # Project documentation
