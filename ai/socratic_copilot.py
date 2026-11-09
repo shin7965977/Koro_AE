@@ -645,31 +645,75 @@ def synthesize_dynamic_dbt_model(
     else:
         start_date, end_date = watermark["min_date"], watermark["max_date"]
 
-    geo_val = decisions.get("geographic")
-    if geo_val and geo_val.startswith("custom:"):
-        cust_geo = geo_val[7:].lower()
+    raw_geo = decisions.get("geographic")
+    if raw_geo and raw_geo.startswith("custom:"):
+        cust_geo = raw_geo[7:].strip().lower()
         if any(w in cust_geo for w in ["德", "de", "german"]):
             geo_val = "DE"
         elif any(w in cust_geo for w in ["奧", "at", "austria"]):
             geo_val = "AT"
         elif any(w in cust_geo for w in ["法", "fr", "france"]):
             geo_val = "FR"
+        elif any(w in cust_geo for w in ["台", "tw", "taiwan"]):
+            geo_val = "TW"
         else:
-            geo_val = "ALL_EU"
+            geo_val = raw_geo[7:].strip().upper()
+    elif raw_geo:
+        geo_val = raw_geo.strip().upper()
+    else:
+        geo_val = ""
 
-    # Recency Override from dialogue context:
-    # If the user explicitly locked down Germany / DE in chat, override any default ALL_EU
-    for note in reversed(custom_notes):
-        n_low = note.lower()
-        if any(w in n_low for w in ["德國", "de", "germany", "german"]):
-            geo_val = "DE"
-            break
-        elif any(w in n_low for w in ["奧地利", "at", "austria"]):
-            geo_val = "AT"
-            break
-        elif any(w in n_low for w in ["法國", "fr", "france"]):
-            geo_val = "FR"
-            break
+    # Only infer market from chat notes if geographic decision was not explicitly set
+    if not geo_val:
+        for note in reversed(custom_notes):
+            n_low = note.lower()
+            if any(w in n_low for w in ["德國", "de", "germany", "german"]):
+                geo_val = "DE"
+                break
+            elif any(w in n_low for w in ["奧地利", "at", "austria"]):
+                geo_val = "AT"
+                break
+            elif any(w in n_low for w in ["法國", "fr", "france"]):
+                geo_val = "FR"
+                break
+
+    # -------------------------------------------------------------
+    # Zero-Facade Physical Catalog Grounding Guardrail
+    # Query physical warehouse for distinct active markets
+    # -------------------------------------------------------------
+    if reflection is None:
+        reflection = DatabaseReflectionService()
+
+    active_physical_markets = reflection.get_distinct_column_values("fct_orders", "market_country")
+    if not active_physical_markets:
+        active_physical_markets = watermark.get("active_markets", ["DE", "AT", "FR"])
+
+    if geo_val and geo_val != "ALL_EU" and geo_val not in active_physical_markets:
+        # Strict Halt & Demand Clarification on Phantom Entities (Zero-Facade Directive)
+        err_msg = (
+            f"⚠️ 實體型錄邊界檢驗未通過 (Physical Catalog Mismatch)："
+            f"在資料庫 `fct_orders.market_country` 中查無 '{geo_val}' 相關數據。"
+            f"目前湖倉實體資料庫中實際記錄的活躍市場僅有：{', '.join(sorted(active_physical_markets))}。"
+            f"禁止為不存在的實體生成數據模型，請確認您的市場維度需求並提出澄清。"
+        )
+        return SchemaDesignResult(
+            spec_id=f"REJECTED-PHANTOM_ENTITY_{geo_val}",
+            scenario_title=f"Phantom Market Entity Rejected ({geo_val})",
+            target_grain="None",
+            upstream_tables=[],
+            dbt_sql="",
+            schema_yaml="",
+            dry_run_success=False,
+            data_preview=pd.DataFrame(),
+            audit_trace=[
+                {"step": "Socratic Clarification", "status": "COMPLETED", "detail": f"Anchored goal: '{user_goal}'"},
+                {"step": "Metadata Grounding Verification", "status": "REJECTED", "detail": f"Phantom market '{geo_val}' rejected against physical lakehouse catalog: {active_physical_markets}"},
+            ],
+            finops_scan_mb=0.0,
+            gdpr_verified=True,
+            is_rejected=True,
+            rejection_reason=err_msg,
+        )
 
     # Category Filter from dialogue context
     category_filter = decisions.get("category_filter")
@@ -1117,6 +1161,66 @@ def synthesize_dynamic_dbt_model(
             "        tests: [not_null]\n"
         )
 
+    elif grain_val == "return_event":
+        model_name = "mart_monthly_product_refunds"
+        scenario_title = f"Monthly Product Refund Event Log ({start_date} ~ {end_date})"
+        target_grain = "Return Event (return_id × product_id)"
+        upstream_tables = ["fct_returns", "dim_products"]
+
+        dbt_sql = (
+            "{{ config(\n"
+            "    materialized='table',\n"
+            "    schema='gold_marts',\n"
+            "    tags=['returns', 'operations', 'monthly']\n"
+            ") }}\n\n"
+            "SELECT\n"
+            "    r.return_id,\n"
+            "    r.order_id,\n"
+            "    r.return_date,\n"
+            "    p.product_id,\n"
+            "    p.product_name,\n"
+            "    p.category_name,\n"
+            "    p.packaging_size,\n"
+            "    r.returned_units,\n"
+            "    r.refunded_eur,\n"
+            "    r.return_reason\n"
+            "FROM {{ ref('fct_returns') }} r\n"
+            "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
+            f"WHERE r.return_date BETWEEN '{start_date}' AND '{end_date}'\n"
+            "ORDER BY r.return_date DESC, r.refunded_eur DESC;"
+        )
+
+        schema_yaml = (
+            "version: 2\n\n"
+            "models:\n"
+            f"  - name: {model_name}\n"
+            f"    description: 'Dynamic product refund event transactions for period {start_date} to {end_date}.'\n"
+            "    meta:\n"
+            "      owner: 'operations_analytics'\n"
+            "      contains_pii: false\n"
+            "      gdpr_compliant: true\n"
+            "      data_layer: 'gold'\n"
+            "    columns:\n"
+            "      - name: return_id\n"
+            "        description: 'Primary surrogate key for return event.'\n"
+            "        data_type: string\n"
+            "        tests: [unique, not_null]\n"
+            "      - name: order_id\n"
+            "        description: 'Associated parent shopware order.'\n"
+            "        data_type: string\n"
+            "        tests: [not_null]\n"
+            "      - name: product_id\n"
+            "        description: 'Foreign key to dim_products.'\n"
+            "        data_type: string\n"
+            "        tests: [not_null]\n"
+            "      - name: returned_units\n"
+            "        data_type: integer\n"
+            "        tests: [not_null]\n"
+            "      - name: refunded_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+        )
+
     elif geo_val == "ALL_EU":
         model_name = "mart_european_market_revenue"
         scenario_title = f"All European Markets Revenue Summary ({start_date} ~ {end_date})"
@@ -1175,66 +1279,6 @@ def synthesize_dynamic_dbt_model(
             "        data_type: numeric\n"
             "        tests: [not_null]\n"
         )
-    elif grain_val == "return_event":
-        model_name = "mart_monthly_product_refunds"
-        scenario_title = f"Monthly Product Refund Event Log ({start_date} ~ {end_date})"
-        target_grain = "Return Event (return_id × product_id)"
-        upstream_tables = ["fct_returns", "dim_products"]
-
-        dbt_sql = (
-            "{{ config(\n"
-            "    materialized='table',\n"
-            "    schema='gold_marts',\n"
-            "    tags=['returns', 'operations', 'monthly']\n"
-            ") }}\n\n"
-            "SELECT\n"
-            "    r.return_id,\n"
-            "    r.order_id,\n"
-            "    r.return_date,\n"
-            "    p.product_id,\n"
-            "    p.product_name,\n"
-            "    p.category_name,\n"
-            "    p.packaging_size,\n"
-            "    r.returned_units,\n"
-            "    r.refunded_eur,\n"
-            "    r.return_reason\n"
-            "FROM {{ ref('fct_returns') }} r\n"
-            "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
-            f"WHERE r.return_date BETWEEN '{start_date}' AND '{end_date}'\n"
-            "ORDER BY r.return_date DESC, r.refunded_eur DESC;"
-        )
-
-        schema_yaml = (
-            "version: 2\n\n"
-            "models:\n"
-            f"  - name: {model_name}\n"
-            f"    description: 'Dynamic product refund event transactions for period {start_date} to {end_date}.'\n"
-            "    meta:\n"
-            "      owner: 'operations_analytics'\n"
-            "      contains_pii: false\n"
-            "      gdpr_compliant: true\n"
-            "      data_layer: 'gold'\n"
-            "    columns:\n"
-            "      - name: return_id\n"
-            "        description: 'Primary surrogate key for return event.'\n"
-            "        data_type: string\n"
-            "        tests: [unique, not_null]\n"
-            "      - name: order_id\n"
-            "        description: 'Associated parent shopware order.'\n"
-            "        data_type: string\n"
-            "        tests: [not_null]\n"
-            "      - name: product_id\n"
-            "        data_type: string\n"
-            "        tests:\n"
-            "          - not_null\n"
-            "          - relationships:\n"
-            "              to: ref('dim_products')\n"
-            "              field: product_id\n"
-            "      - name: refunded_eur\n"
-            "        data_type: numeric\n"
-            "        tests: [not_null]\n"
-        )
-
     elif grain_val == "sku_summary":
         model_name = "mart_product_refund_summary"
         scenario_title = f"Product SKU Refund Summary ({start_date} ~ {end_date})"

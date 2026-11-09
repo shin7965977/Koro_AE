@@ -44,6 +44,38 @@ class DatabaseReflectionService:
         """Return list of conformed Silver/Bronze table names available in the data dictionary."""
         return sorted(list(self.data_dict.keys()))
 
+    def get_distinct_column_values(self, table_name: str, column_name: str) -> list[str]:
+        """Query physical DuckDB warehouse or local data dictionary for distinct non-null values of a column."""
+        # 1. Try physical DuckDB connection if available
+        if self.db_path and os.path.exists(self.db_path):
+            try:
+                con = duckdb.connect(self.db_path, read_only=True)
+                try:
+                    # Check both qualified silver schema and unqualified table name
+                    target_table = f"main_silver.{table_name}"
+                    try:
+                        con.execute(f"DESCRIBE {target_table}")
+                    except Exception:
+                        target_table = table_name
+
+                    query = f"SELECT DISTINCT {column_name} FROM {target_table} WHERE {column_name} IS NOT NULL ORDER BY {column_name}"
+                    rows = con.execute(query).fetchall()
+                    if rows:
+                        return [str(r[0]) for r in rows if r[0] is not None]
+                finally:
+                    con.close()
+            except Exception:
+                pass
+
+        # 2. Fall back to reflected data_dict
+        for t_key in [table_name, f"main_silver.{table_name}", f"main_bronze.{table_name}"]:
+            df = self.data_dict.get(t_key)
+            if df is not None and column_name in df.columns:
+                vals = df[column_name].dropna().unique().tolist()
+                return sorted([str(v) for v in vals])
+
+        return []
+
     def get_kimball_models(self) -> dict[str, list[str]]:
         """Categorize available models into dimensions and facts."""
         models: dict[str, list[str]] = {"dimensions": [], "facts": [], "raw": []}

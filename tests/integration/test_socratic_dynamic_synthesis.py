@@ -581,6 +581,47 @@ def test_pricing_and_returns_fusion_synthesizes_dual_cte_mart() -> None:
     assert list(df.columns).index("return_rate_pct") <= 7
 
 
+def test_phantom_market_tw_halted_and_rejected_against_physical_catalog() -> None:
+    """Verify that ungrounded phantom market 'TW' is halted and rejected against physical warehouse catalog."""
+    user_goal = "我想分析產品價格跟營收的關係，還有退貨情況"
+    decisions = {
+        "geographic": "TW",  # User smuggled in TW
+        "temporal": "2026-08-03:2026-10-31",
+        "custom_chat_notes": "custom:先看德國; 之後想看台灣",
+    }
+
+    result = synthesize_dynamic_dbt_model(user_goal, decisions)
+
+    # Invariants Check: Synthesizer must strictly halt & reject without running dry-run or fabricating SQL
+    assert result.is_rejected is True
+    assert result.dry_run_success is False
+    assert result.dbt_sql == ""
+    assert "REJECTED-PHANTOM_ENTITY_TW" in result.spec_id
+    assert "fct_orders.market_country" in result.rejection_reason
+    assert "TW" in result.rejection_reason
+    assert any(m in result.rejection_reason for m in ["DE", "AT", "FR"])
+    assert result.data_preview.empty
+
+
+def test_no_silent_override_when_chat_notes_contain_de_but_user_specifies_explicit_at() -> None:
+    """Verify that explicit user decision on 'AT' is not silently overridden to 'DE' by past dialogue notes."""
+    user_goal = "我想分析產品價格跟營收的關係，還有退貨情況"
+    decisions = {
+        "geographic": "AT",  # Explicit user decision
+        "temporal": "2026-08-03:2026-10-31",
+        "custom_chat_notes": "custom:原本想看德國; 現在明確決定看奧地利",
+    }
+
+    result = synthesize_dynamic_dbt_model(user_goal, decisions)
+
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert "mart_product_price_return_performance_at" in result.dbt_sql
+    assert (result.data_preview["market_country"] == "AT").all()
+    assert not (result.data_preview["market_country"] == "DE").any()
+
+
+
 
 
 
