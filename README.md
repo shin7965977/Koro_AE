@@ -1,11 +1,21 @@
-# KoRo Analytics Engineering & AI-ready Data Platform POC
+# KoRo Analytics Engineering & Governed AI Copilot Platform
 
-[![CI Pipeline](https://github.com/your-org/koro-analytics-engineering-poc/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/koro-analytics-engineering-poc/actions)
-[![dbt](https://img.shields.io/badge/dbt-1.8-orange.svg)](https://www.getdbt.com/)
-[![DuckDB](https://img.shields.io/badge/OLAP-DuckDB-yellow.svg)](https://duckdb.org/)
-[![Streamlit](https://img.shields.io/badge/Dashboard-Streamlit-red.svg)](https://streamlit.io/)
+[![Live Demo](https://img.shields.io/badge/Streamlit_App-Live_Demo-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)](https://koroae-emnrmedur9bkudgaygri4f.streamlit.app/)
+[![dbt](https://img.shields.io/badge/dbt--core-1.12.6-orange.svg?style=for-the-badge&logo=dbt&logoColor=white)](https://www.getdbt.com/)
+[![DuckDB](https://img.shields.io/badge/DuckDB-In--Process_OLAP-FFF000.svg?style=for-the-badge&logo=duckdb&logoColor=black)](https://duckdb.org/)
+[![Langfuse](https://img.shields.io/badge/Langfuse-LLM_Observability-000000.svg?style=for-the-badge&logo=langfuse&logoColor=white)](https://cloud.langfuse.com/)
 
-An end-to-end Analytics Engineering and AI-ready Data Platform proof-of-concept (POC) built for e-commerce (KoRo). It transforms raw operational and public web data into trusted, reusable dimensional data assets, power traditional BI dashboards, and exposes semantic context to AI-powered self-service analytics.
+---
+
+### 💡 What Problem Does This POC Solve? (The Executive Storyline)
+
+In modern e-commerce data platforms, Analytics Engineers are overwhelmed by ad-hoc business requests, while unguided AI copilot queries often produce warehouse-breaking hallucinations, phantom entities, and severe financial fan-out errors (e.g. cross-fact 1:N double-counting).
+
+This production-grade Lakehouse POC bridges the gap between commercial stakeholders and data engineering:
+1. **Stakeholders Inquire in Natural Language**: Commercial teams ask nuanced questions (e.g., *"How does 1kg bulk packaging affect return rates across DE vs. FR markets?"*) via a guided Socratic clarification workflow.
+2. **Context-Engineered Semantic Mapping**: Instead of guessing SQL, the Copilot dynamically inspects physical DuckDB metadata, conformed Kimball star-schema grains (`fct_orders`, `fct_order_items`, `fct_returns`, `dim_products`), and active dimension values to prevent phantom filters.
+3. **Automated dbt Contract & SQL Compilation**: The system compiles a signed specification memo into a fully governed dbt model (`.sql`) alongside its version-controlled data contract (`schema.yml`), validated by live DuckDB dry-runs before deployment.
+4. **End-to-End Observability with Langfuse**: Every step—from dialogue intent parsing to AST compilation and dry-run execution—is instrumented with real-time Langfuse tracing and automated semantic-grounding scoring.
 
 ---
 
