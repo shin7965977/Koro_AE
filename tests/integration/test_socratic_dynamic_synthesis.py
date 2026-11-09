@@ -9,6 +9,8 @@ from ai.socratic_copilot import (
     get_lakehouse_watermark,
     analyze_socratic_inquiry,
     synthesize_dynamic_dbt_model,
+    chat_socratic_turn,
+    summarize_socratic_requirements,
 )
 
 
@@ -324,3 +326,54 @@ def test_promotions_and_vouchers_intent_synthesizes_voucher_metrics() -> None:
     assert "total_voucher_discount_eur" in result.data_preview.columns
     assert "market_country" in result.data_preview.columns
     assert len(result.data_preview) > 0
+
+
+def test_chat_socratic_turn_provides_domain_guidance_without_sql() -> None:
+    """Verify chat_socratic_turn advises on dimensions (e.g. packaging_size) and never outputs code blocks."""
+    advice = chat_socratic_turn(
+        user_message="我想分析不同包裝規格（packaging_size）對於價格與銷量的影響",
+        chat_history=[],
+        user_goal="我想要分析產品價格跟營收的關係",
+    )
+    assert "packaging_size" in advice or "包裝" in advice
+    # Zero-Facade: Must not compile raw SQL blocks in chat advisory turn
+    assert "SELECT " not in advice
+    assert "CREATE TABLE" not in advice
+
+
+def test_summarize_socratic_requirements_and_signoff_synthesis() -> None:
+    """Verify requirements summary consolidates dialogue and triggers downstream dynamic synthesis."""
+    user_goal = "我想要分析產品價格跟營收的關係"
+    decisions = {
+        "temporal": "2026-10-01:2026-10-31",
+        "geographic": "DE",
+    }
+    chat_history = [
+        {"role": "user", "content": "我想特別關注 1kg 大包裝與散裝的單價差異"},
+        {"role": "assistant", "content": "好的，我們可以在 dim_products 維度加入 packaging_size 進行分群比較。"},
+    ]
+
+    memo = summarize_socratic_requirements(
+        user_goal=user_goal,
+        decisions=decisions,
+        chat_history=chat_history,
+    )
+
+    assert "Product SKU" in memo["target_grain"]
+    assert "2026-10-01" in memo["date_range"]
+    assert memo["market_country"] == "DE"
+    assert "dim_products" in memo["upstream_tables"]
+    assert "1kg" in memo["chat_context_notes"]
+
+    # Now verify compilation with signed-off context
+    signed_decisions = dict(decisions)
+    if memo.get("chat_context_notes"):
+        signed_decisions["custom_chat_notes"] = f"custom:{memo.get('chat_context_notes')}"
+
+    result = synthesize_dynamic_dbt_model(user_goal, signed_decisions)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert "packaging_size" in result.data_preview.columns
+    assert "gross_revenue_eur" in result.data_preview.columns
+    assert (result.data_preview["market_country"] == "DE").all()
+

@@ -663,6 +663,8 @@ def synthesize_dynamic_dbt_model(
     promo_keywords = ["促銷", "折價券", "折扣", "voucher", "discount", "black friday", "黑色星期五", "促銷訂單量"]
     is_promo_intent = grain_val == "promotions_vouchers" or any(k in combined_query for k in promo_keywords)
 
+    has_price_revenue_rel = any(w in combined_query for w in ["價格與營收", "價格跟營收", "產品價格與營收", "單價與營收", "價格", "price"]) and any(w in combined_query for w in ["營收", "營業額", "revenue", "sales"])
+
     if is_catalog_intent:
         model_name = "mart_product_catalog"
         scenario_title = "Product Catalog & SKU Master Inventory"
@@ -685,7 +687,7 @@ def synthesize_dynamic_dbt_model(
             "    p.stock_on_hand,\n"
             "    p.is_available\n"
             "FROM {{ ref('dim_products') }} p\n"
-            "ORDER BY p.product_id ASC;"
+            "ORDER BY p.product_id;"
         )
         schema_yaml = (
             "version: 2\n\n"
@@ -706,6 +708,78 @@ def synthesize_dynamic_dbt_model(
             "        tests: [not_null]\n"
             "      - name: category_name\n"
             "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+        )
+
+    elif has_price_revenue_rel or (any(k in combined_query for k in ["包裝", "規格", "packaging"]) and any(k in combined_query for k in ["價格", "單價", "price"])):
+        # Price, Packaging Size & Revenue Relationship Mart
+        geo_filter = f"AND co.market_country = '{geo_val}'\n" if (geo_val and geo_val in ["DE", "AT", "FR"]) else ""
+        geo_select = "co.market_country,\n    " if (geo_val and geo_val in ["DE", "AT", "FR"]) else ""
+        geo_group = ", co.market_country" if (geo_val and geo_val in ["DE", "AT", "FR"]) else ""
+        geo_order = "co.market_country, " if (geo_val and geo_val in ["DE", "AT", "FR"]) else ""
+        
+        country_suffix = f"_{geo_val.lower()}" if (geo_val and geo_val in ["DE", "AT", "FR"]) else ""
+        model_name = f"mart_product_price_revenue_analysis{country_suffix}"
+        scenario_title = f"Product Price, Packaging Size & Revenue Relationship ({start_date} ~ {end_date})"
+        target_grain = "Product SKU x Packaging Size"
+        upstream_tables = ["dim_products", "fct_order_items", "fct_orders"]
+
+        dbt_sql = (
+            f"-- Model: {model_name}.sql\n"
+            "{{ config(\n"
+            "    materialized='table',\n"
+            "    schema='gold_marts',\n"
+            "    tags=['pricing', 'revenue', 'packaging', 'governed']\n"
+            ") }}\n\n"
+            "WITH customer_orders AS (\n"
+            "    SELECT\n"
+            "        o.order_id,\n"
+            "        o.market_country\n"
+            "    FROM {{ ref('fct_orders') }} o\n"
+            ")\n"
+            "SELECT\n"
+            "    p.product_id,\n"
+            "    p.product_name,\n"
+            "    p.category_name,\n"
+            "    p.packaging_size,\n"
+            "    p.unit_price_eur AS catalog_unit_price_eur,\n"
+            f"    {geo_select}"
+            "    COUNT(DISTINCT i.order_id) AS total_orders,\n"
+            "    SUM(i.quantity_sold) AS total_units_sold,\n"
+            "    ROUND(SUM(i.line_gross_eur), 2) AS gross_revenue_eur,\n"
+            "    ROUND(SUM(i.line_net_eur), 2) AS net_revenue_eur,\n"
+            "    ROUND(SUM(i.line_net_eur) / NULLIF(SUM(i.quantity_sold), 0), 2) AS realized_avg_unit_price_eur\n"
+            "FROM {{ ref('fct_order_items') }} i\n"
+            "JOIN customer_orders co USING (order_id)\n"
+            "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
+            f"WHERE i.order_date BETWEEN '{start_date}' AND '{end_date}'\n"
+            f"    {geo_filter}"
+            f"GROUP BY p.product_id, p.product_name, p.category_name, p.packaging_size, p.unit_price_eur{geo_group}\n"
+            f"ORDER BY {geo_order}gross_revenue_eur DESC;"
+        )
+
+        schema_yaml = (
+            "version: 2\n\n"
+            "models:\n"
+            f"  - name: {model_name}\n"
+            "    description: 'Product price, packaging size, and net revenue relationship analysis.'\n"
+            "    meta:\n"
+            "      owner: 'commercial_pricing'\n"
+            "      contains_pii: false\n"
+            "      gdpr_compliant: true\n"
+            "      data_layer: 'gold'\n"
+            "    columns:\n"
+            "      - name: product_id\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: packaging_size\n"
+            "        data_type: varchar\n"
+            "        tests: [not_null]\n"
+            "      - name: catalog_unit_price_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+            "      - name: gross_revenue_eur\n"
+            "        data_type: numeric\n"
             "        tests: [not_null]\n"
         )
 
@@ -1253,3 +1327,200 @@ def synthesize_dynamic_dbt_model(
         finops_scan_mb=4.8,
         gdpr_verified=True,
     )
+
+
+# =====================================================================
+# Multi-turn Conversational Interview & Requirement Memo Summarizer
+# =====================================================================
+
+def chat_socratic_turn(
+    user_message: str,
+    chat_history: list[dict[str, str]],
+    user_goal: str = "",
+    reflection: DatabaseReflectionService | None = None,
+    api_key: str = "",
+) -> str:
+    """Provide contextual Analytics Engineering domain advice for an inquiry turn.
+
+    Zero-Facade Directive:
+    - Never compile SQL or synthesize data contracts during a conversational turn.
+    - Ground advice in physical Lakehouse entities (dim_products, fct_orders, fct_order_items, fct_returns).
+    """
+    msg_clean = (user_message or "").strip()
+    if not msg_clean:
+        return "請輸入您想深入探討或補充的分析細節。"
+
+    watermark = get_lakehouse_watermark(reflection)
+    effective_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+
+    # Try Gemini if key is provided
+    if effective_key:
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=effective_key)
+            system_instruction = (
+                "You are the KoRo Lakehouse Lead Analytics Engineer and Socratic Copilot.\n"
+                "Your role is to converse with business stakeholders, answer questions about analytical dimensions, "
+                "metrics, and data availability, and guide them in formulating precise requirements.\n\n"
+                "Physical Lakehouse Facts & Dimensions:\n"
+                "- dim_products: product_id, product_name, category_id, category_name, packaging_size, unit_price_eur, unit_cost_eur, stock_on_hand, is_available. (12 European nut/dried-fruit SKUs, e.g. 1kg bulk bags vs 500g/250g).\n"
+                "- fct_orders: order_id, order_date, customer_id, market_country, discount_eur, order_gross_eur, order_net_eur.\n"
+                "- fct_order_items: order_item_id, order_id, product_id, quantity_sold, line_gross_eur, line_net_eur, cogs_eur.\n"
+                "- fct_returns: return_id, order_item_id, return_date, return_reason, refund_amount_eur.\n"
+                f"- Physical Watermark: {watermark['min_date']} to {watermark['max_date']}. Active markets: ['DE', 'AT', 'FR'].\n\n"
+                "Rules:\n"
+                "1. Answer in the same language as the user (Traditional Chinese preferred for Chinese queries).\n"
+                "2. Provide constructive suggestions on dimensions (e.g. breaking down by packaging_size or market_country), metrics (unit margins, return rates), or filtering.\n"
+                "3. Do NOT generate executable SQL or dbt code blocks yet. Tell the user what data is available and how it can be modeled.\n"
+                "4. Keep the response concise, professional, and actionable (under 150 words)."
+            )
+
+            history_context = "\n".join([f"{h.get('role', 'user')}: {h.get('content', '')}" for h in chat_history[-6:]])
+            full_prompt = (
+                f"Initial Goal: {user_goal}\n"
+                f"Conversation History:\n{history_context}\n"
+                f"User's Latest Inquiry: {msg_clean}"
+            )
+
+            models_to_try = [
+                os.getenv("LLM_MODEL", "gemini-3.5-flash-lite"),
+                "gemini-3.5-flash-lite",
+                "gemini-3.5-flash",
+            ]
+            for m in models_to_try:
+                try:
+                    resp = client.models.generate_content(
+                        model=m,
+                        contents=full_prompt,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=0.2,
+                        ),
+                    )
+                    if resp and resp.text:
+                        return resp.text.strip()
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    # Deterministic offline guidance for tests and local mode
+    lower_msg = msg_clean.lower()
+    if any(k in lower_msg for k in ["包裝", "規格", "packaging", "size", "1kg"]):
+        return (
+            "好的！在 `dim_products` 維度中，我們有明確的 `packaging_size` 欄位（例如 1kg 散裝、500g、250g 等）。"
+            "若將分析粒度下鑽至『產品規格與包裝』，我們可以清楚比對大包裝與小包裝在各市場的單價、銷量及退貨率差異。"
+        )
+    elif any(k in lower_msg for k in ["價格", "單價", "price", "彈性", "營收"]):
+        return (
+            "了解！我們可以在事實層 `fct_order_items` 結合 `dim_products.unit_price_eur`，"
+            "計算各產品在扣除折價券前後的平均成交單價與總營收貢獻，觀察不同價格區間對銷量的影響。"
+        )
+    elif any(k in lower_msg for k in ["市場", "國家", "market", "country", "de", "at", "fr"]):
+        return (
+            f"收到！湖倉目前支援的歐洲實體市場為 DE（德國）、AT（奧地利）、FR（法國）。"
+            "我們可以依據市場進行分群，比較不同地區的定價表現與消費者退貨偏好。"
+        )
+    else:
+        return (
+            f"已記錄您的需求補充：「{msg_clean}」。"
+            "此條件將納入後續的分析需求總結中。若您確認各項條件已齊全，可點擊「總結需求」按鈕生成完整的分析規格書。"
+        )
+
+
+def summarize_socratic_requirements(
+    user_goal: str,
+    decisions: dict[str, str],
+    chat_history: list[dict[str, str]],
+    watermark: dict[str, Any] | None = None,
+    api_key: str = "",
+) -> dict[str, Any]:
+    """Synthesize conversation history, options, and business goal into a structured requirement memo.
+
+    Returns a dict with:
+    - analytical_objective: str
+    - target_grain: str
+    - date_range: str
+    - market_country: str
+    - target_metrics: list[str]
+    - upstream_tables: list[str]
+    - chat_context_notes: str
+    """
+    if watermark is None:
+        watermark = get_lakehouse_watermark()
+
+    # Extract conversation nuances
+    user_chat_notes = [
+        h["content"].strip()
+        for h in chat_history
+        if h.get("role") == "user" and h.get("content", "").strip()
+    ]
+    chat_context_notes = "; ".join(user_chat_notes)
+
+    temporal_val = decisions.get("temporal", f"{watermark['min_date']}:{watermark['max_date']}")
+    if ":" in temporal_val:
+        s_date, e_date = temporal_val.split(":", 1)
+    else:
+        s_date, e_date = watermark["min_date"], watermark["max_date"]
+
+    market_val = decisions.get("geographic", "ALL_EU")
+    grain_val = decisions.get("grain", "")
+
+    # Consolidate target metrics & tables based on intent and chat notes
+    combined_text = f"{user_goal} {chat_context_notes}".lower()
+
+    if any(k in combined_text for k in ["包裝", "規格", "packaging", "size", "1kg"]):
+        target_grain = "Product SKU x Packaging Size"
+        metrics = ["unit_price_eur", "total_quantity_sold", "total_line_gross_eur", "return_rate_pct"]
+        upstream = ["dim_products", "fct_order_items", "fct_orders"]
+    elif any(k in combined_text for k in ["退貨", "退款", "refund", "return"]):
+        target_grain = "Return Event Log" if "明細" in combined_text or grain_val == "return_event" else "Product SKU Summary"
+        metrics = ["refund_amount_eur", "return_count", "return_rate_pct"]
+        upstream = ["fct_returns", "fct_order_items", "dim_products"]
+    elif any(k in combined_text for k in ["毛利", "margin", "cost"]):
+        target_grain = "Category x Market"
+        metrics = ["line_net_eur", "cogs_eur", "net_margin_eur", "net_margin_pct"]
+        upstream = ["fct_order_items", "fct_orders", "dim_products"]
+    else:
+        target_grain = "Monthly Order Summary" if "月" in combined_text else "Order Item Summary"
+        metrics = ["gross_revenue_eur", "net_revenue_eur", "discount_eur", "total_orders"]
+        upstream = ["fct_orders", "fct_order_items", "dim_products"]
+
+    # LLM summarization if available
+    effective_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+    if effective_key:
+        try:
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=effective_key)
+            prompt = (
+                f"Consolidate these data requirements into a concise business objective description:\n"
+                f"Goal: {user_goal}\n"
+                f"Date Range: {s_date} ~ {e_date}\n"
+                f"Market: {market_val}\n"
+                f"Chat Notes: {chat_context_notes}\n"
+                "Return a single paragraph in Traditional Chinese summarizing the exact scope and purpose."
+            )
+            resp = client.models.generate_content(
+                model=os.getenv("LLM_MODEL", "gemini-3.5-flash-lite"),
+                contents=prompt,
+            )
+            if resp and resp.text:
+                objective_desc = resp.text.strip()
+            else:
+                objective_desc = f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
+        except Exception:
+            objective_desc = f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
+    else:
+        objective_desc = f"{user_goal}（深入分析各維度指標關聯與市場趨勢）"
+
+    return {
+        "analytical_objective": objective_desc,
+        "target_grain": target_grain,
+        "date_range": f"{s_date} 至 {e_date}",
+        "market_country": market_val,
+        "target_metrics": metrics,
+        "upstream_tables": upstream,
+        "chat_context_notes": chat_context_notes,
+    }
