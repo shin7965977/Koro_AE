@@ -482,6 +482,9 @@ def _deterministic_offline_socratic_analysis(
     promo_tokens = ["促銷", "折價券", "折扣", "voucher", "discount", "black friday", "黑色星期五", "促銷訂單量"]
     has_promo_intent = any(t in lower_goal for t in promo_tokens)
 
+    revenue_tokens = ["營業額", "營收", "銷售額", "revenue", "sales"]
+    has_revenue_intent = any(t in lower_goal for t in revenue_tokens)
+
     record_tokens = ["紀錄", "明細", "流水", "log", "record", "event", "退款紀錄", "退貨單", "退款"]
     has_record_intent = any(t in lower_goal for t in record_tokens)
 
@@ -510,11 +513,10 @@ def _deterministic_offline_socratic_analysis(
         questions.append(q_grain)
     elif matched_scenario == "bulk_returns" and not has_record_intent:
         locked_decisions["grain"] = "sku_packaging_diagnosis"
+    elif has_revenue_intent:
+        locked_decisions["grain"] = "monthly_revenue"
     elif matched_scenario == "category_margin":
-        if any(w in lower_goal for w in ["營業額", "營收", "銷售額", "revenue"]):
-            locked_decisions["grain"] = "monthly_revenue"
-        else:
-            locked_decisions["grain"] = "category_margin"
+        locked_decisions["grain"] = "category_margin"
 
     needs_clarification = len(questions) > 0
 
@@ -623,20 +625,22 @@ def synthesize_dynamic_dbt_model(
     watermark = get_lakehouse_watermark(reflection)
 
     # 1. Parse Temporal Decision with Zero-Drift Granularity
-    temporal_val = decisions.get("temporal", f"{watermark['min_date']}:{watermark['max_date']}")
-    if temporal_val.startswith("custom:"):
+    s_query, e_query, _, t_lbl = extract_temporal_intent(combined_query, watermark)
+
+    temporal_val = decisions.get("temporal")
+    if temporal_val and temporal_val.startswith("custom:"):
         cust = temporal_val[7:].strip()
-        s_date, e_date, _, _ = extract_temporal_intent(cust, watermark)
-        start_date, end_date = s_date, e_date
-    elif ":" in temporal_val:
+        s_cust, e_cust, _, _ = extract_temporal_intent(cust, watermark)
+        start_date, end_date = s_cust, e_cust
+    elif temporal_val and ":" in temporal_val and temporal_val != f"{watermark['min_date']}:{watermark['max_date']}":
+        start_date, end_date = temporal_val.split(":", 1)
+    elif t_lbl:
+        # Prioritize explicit month extracted directly from inquiry (e.g. '9月' -> 2026-09-01 ~ 2026-09-30)
+        start_date, end_date = s_query, e_query
+    elif temporal_val and ":" in temporal_val:
         start_date, end_date = temporal_val.split(":", 1)
     else:
-        # Check if user query or custom note has specific month
-        s_date, e_date, _, t_lbl = extract_temporal_intent(combined_query, watermark)
-        if t_lbl:
-            start_date, end_date = s_date, e_date
-        else:
-            start_date, end_date = watermark["min_date"], watermark["max_date"]
+        start_date, end_date = watermark["min_date"], watermark["max_date"]
 
     geo_val = decisions.get("geographic")
     if geo_val and geo_val.startswith("custom:"):
@@ -986,7 +990,7 @@ def synthesize_dynamic_dbt_model(
             "        tests: [not_null]\n"
         )
 
-    elif grain_val == "monthly_revenue":
+    elif grain_val == "monthly_revenue" or any(w in combined_query for w in ["營業額", "營收", "銷售額", "revenue", "sales"]):
         model_name = "mart_monthly_revenue_summary"
         scenario_title = f"Monthly Gross and Net Revenue Summary ({start_date} ~ {end_date})"
         target_grain = "Monthly Order Summary"
