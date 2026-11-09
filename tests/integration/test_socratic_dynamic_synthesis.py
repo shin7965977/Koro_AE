@@ -683,6 +683,52 @@ def test_dynamic_synthesis_filters_almond_and_cashews_in_sql() -> None:
     assert (df["reporting_month"] == "2026-08").all()
 
 
+def test_recency_override_user_demands_september_over_earlier_august() -> None:
+    """Verify that when user asked for July, AI suggested August, but user finally demanded '給我九月',
+    system strictly locks to September (2026-09-01 ~ 2026-09-30) without falling back to August."""
+    user_goal = "我想分析產品價格跟營收的關係，還有退貨情況"
+    chat_history = [
+        {"role": "user", "content": "我們有不同包裝規格嗎？1kg 大包裝跟小包裝的單價差異會不會影響退貨？"},
+        {"role": "assistant", "content": "是的，我們有各種包裝規格..."},
+        {"role": "user", "content": "德國"},
+        {"role": "user", "content": "堅果類"},
+        {"role": "user", "content": "我只要七月就好"},
+        {"role": "assistant", "content": "我們的物理湖倉資料範圍是 2026-08-03 至 2026-10-31。建議調整為最早月份 2026 年 8 月。"},
+        {"role": "user", "content": "給我九月"},
+        {"role": "assistant", "content": "沒問題！我們將時間範圍鎖定在 2026 年 9 月 (2026-09-01 至 2026-09-30)。"},
+    ]
+    decisions = {"geographic": "DE"}
+
+    memo = summarize_socratic_requirements(user_goal, decisions, chat_history)
+
+    # 1. Invariant: Memo must lock to September
+    assert memo["start_date"] == "2026-09-01"
+    assert memo["end_date"] == "2026-09-30"
+    assert "9 月份" in memo["chat_context_notes"]
+    assert "8 月份" not in memo["chat_context_notes"]
+
+    # 2. Synthesize SQL and Dry-Run
+    signed = dict(decisions)
+    signed["start_date"] = memo["start_date"]
+    signed["end_date"] = memo["end_date"]
+    signed["temporal"] = "2026-09-01:2026-09-30"
+    signed["custom_chat_notes"] = f"custom:{memo.get('chat_context_notes')}"
+
+    result = synthesize_dynamic_dbt_model(user_goal, signed)
+
+    # 3. Invariant: SQL and Dry-Run output must be September (2026-09)
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    assert "BETWEEN '2026-09-01' AND '2026-09-30'" in result.dbt_sql
+    assert "'2026-09' AS reporting_month" in result.dbt_sql
+    assert "2026-08" not in result.dbt_sql
+
+    df = result.data_preview
+    assert len(df) == 5  # 5 nuts
+    assert (df["reporting_month"] == "2026-09").all()
+
+
+
 
 
 

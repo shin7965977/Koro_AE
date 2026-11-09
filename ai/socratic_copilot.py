@@ -1643,15 +1643,36 @@ def synthesize_dynamic_dbt_model(
                     "custom_notes": custom_notes,
                 },
             )
+            lf_gen = None
             if lf_trace:
+                lf_gen = telemetry.log_generation(
+                    trace=lf_trace,
+                    name="dbt_sql_compiler",
+                    model="gemini-3.8-flash",
+                    input_prompt=f"Goal: {user_goal} | Decisions: {decisions}",
+                    output_completion=dbt_sql,
+                    usage={"total_tokens": len(dbt_sql.split())},
+                )
                 expected_checks: list[str] = []
                 if any(w in combined_query for w in ["杏仁", "almond"]):
                     expected_checks.append("Almond")
                 if any(w in combined_query for w in ["腰果", "cashew"]):
                     expected_checks.append("Cashew")
+                if any(w in combined_query for w in ["9月", "九月", "2026-09"]):
+                    expected_checks.append("2026-09")
+                elif any(w in combined_query for w in ["8月", "八月", "2026-08"]):
+                    expected_checks.append("2026-08")
+                elif any(w in combined_query for w in ["10月", "十月", "2026-10"]):
+                    expected_checks.append("2026-10")
                 if geo_val in ["DE", "AT", "FR"]:
                     expected_checks.append(geo_val)
-                telemetry.evaluate_grounding(lf_trace, expected_filters=expected_checks, generated_sql=dbt_sql)
+
+                telemetry.evaluate_grounding(
+                    trace=lf_trace,
+                    expected_filters=expected_checks,
+                    generated_sql=dbt_sql,
+                    observation=lf_gen,
+                )
                 telemetry.flush()
         except Exception:
             pass
@@ -1810,13 +1831,19 @@ def _sanitize_and_summarize_advisory_notes(chat_history: list[dict[str, str]], u
         )
     )
 
+    # Strict Recency Month Extraction
     month = ""
-    if any(w in combined for w in ["8月", "八月", "august"]):
-        month = "8 月份"
-    elif any(w in combined for w in ["9月", "九月", "september"]):
-        month = "9 月份"
-    elif any(w in combined for w in ["10月", "十月", "october"]):
-        month = "10 月份"
+    for note in reversed(valid_user_notes):
+        n_low = note.lower()
+        if any(w in n_low for w in ["9月", "九月", "september"]):
+            month = "9 月份"
+            break
+        elif any(w in n_low for w in ["8月", "八月", "august"]):
+            month = "8 月份"
+            break
+        elif any(w in n_low for w in ["10月", "十月", "october"]):
+            month = "10 月份"
+            break
 
     items: list[str] = []
     if any(w in combined for w in ["杏仁", "almond"]):
@@ -1928,49 +1955,58 @@ def summarize_socratic_requirements(
     )
 
     # -------------------------------------------------------------
-    # Explicit Temporal Locking: Check dialogue consensus for non-default months
-    # (e.g. user proposed 7月, AI suggested 8月, user accepted "可以/好")
+    # Explicit Temporal Locking: Strict Recency Consensus
+    # Checks recent user turns first so later commands ("給我九月") override earlier ones ("八月")
     # -------------------------------------------------------------
-    has_august_consensus = False
-    has_september_consensus = False
-    has_october_consensus = False
-    has_full_watermark_consensus = False
-
-    for i, h in enumerate(chat_history):
-        content_norm = re.sub(r"\s+", "", h.get("content", "").lower())
-        
-        # 1. User directly stated August
-        if h.get("role") == "user" and any(w in content_norm for w in ["8月", "八月", "august", "2026-08"]):
-            has_august_consensus = True
+    target_month_consensus: str | None = None
+    for note in reversed(user_chat_notes):
+        n_norm = re.sub(r"\s+", "", note.lower())
+        if any(w in n_norm for w in ["9月", "九月", "september", "2026-09"]):
+            target_month_consensus = "2026-09"
             break
-            
-        # 2. Assistant suggested August and user agreed in next turn
-        if h.get("role") == "assistant" and any(w in content_norm for w in ["8月", "八月", "august", "2026-08", "最早月份"]):
-            if i + 1 < len(chat_history) and chat_history[i + 1].get("role") == "user":
-                next_reply = re.sub(r"\s+", "", chat_history[i + 1].get("content", "").lower())
-                if any(w in next_reply for w in ["可以", "好", "沒問題", "ok", "yes", "行", "同意", "好的", "可"]):
-                    has_august_consensus = True
+        elif any(w in n_norm for w in ["8月", "八月", "august", "2026-08"]):
+            target_month_consensus = "2026-08"
+            break
+        elif any(w in n_norm for w in ["10月", "十月", "october", "2026-10"]):
+            target_month_consensus = "2026-10"
+            break
+
+    # If user didn't explicitly name month in recent turns, check assistant confirmation
+    if not target_month_consensus:
+        for h in reversed(chat_history):
+            if h.get("role") == "assistant":
+                a_norm = re.sub(r"\s+", "", h.get("content", "").lower())
+                if any(w in a_norm for w in ["水印區間", "2026-08-03至2026-10-31", "全期數據", "全期間"]):
+                    target_month_consensus = "FULL"
                     break
-        
-        # 3. Assistant confirmed locking to August
-        if h.get("role") == "assistant" and any(w in content_norm for w in ["鎖定在2026年8月", "鎖定在起始月份", "2026年8月的所有"]):
-            has_august_consensus = True
-            break
-
-        # 4. Assistant or user proposed full lakehouse watermark period
-        if any(w in content_norm for w in ["水印區間（2026-08-03至2026-10-31）", "水印區間(2026-08-03至2026-10-31)", "2026-08-03至2026-10-31", "全期數據", "全期間"]):
-            has_full_watermark_consensus = True
+                elif any(w in a_norm for w in ["鎖定在2026年9月", "2026年9月", "9月份", "2026-09"]):
+                    target_month_consensus = "2026-09"
+                    break
+                elif any(w in a_norm for w in ["鎖定在2026年8月", "2026年8月", "8月份", "最早月份", "2026-08"]):
+                    target_month_consensus = "2026-08"
+                    break
+                elif any(w in a_norm for w in ["2026年10月", "10月份", "最新月份", "2026-10"]):
+                    target_month_consensus = "2026-10"
+                    break
 
     temporal_provenance_label = ""
     temporal_val = decisions.get("temporal", f"{watermark['min_date']}:{watermark['max_date']}")
-    if has_august_consensus:
-        s_date = "2026-08-03"
-        e_date = "2026-08-31"
-        temporal_provenance_label = " [已依對話共識鎖定為最早月份]"
-    elif has_full_watermark_consensus:
+    if target_month_consensus == "FULL":
         s_date = watermark["min_date"]
         e_date = watermark["max_date"]
         temporal_provenance_label = f" [已依對話共識鎖定為資料庫水印全期 ({s_date} 至 {e_date})]"
+    elif target_month_consensus == "2026-09":
+        s_date = "2026-09-01"
+        e_date = "2026-09-30"
+        temporal_provenance_label = " [已依對話共識鎖定為 9 月份 (2026-09-01 至 2026-09-30)]"
+    elif target_month_consensus == "2026-08":
+        s_date = "2026-08-03"
+        e_date = "2026-08-31"
+        temporal_provenance_label = " [已依對話共識鎖定為最早月份 (2026-08-03 至 2026-08-31)]"
+    elif target_month_consensus == "2026-10":
+        s_date = "2026-10-01"
+        e_date = "2026-10-31"
+        temporal_provenance_label = " [已依對話共識鎖定為最近月份 (2026-10-01 至 2026-10-31)]"
     elif ":" in temporal_val:
         s_date, e_date = temporal_val.split(":", 1)
     else:

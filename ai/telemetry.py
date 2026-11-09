@@ -141,6 +141,7 @@ class LakehouseTelemetry:
         name: str = "semantic_grounding",
         expected_filters: Optional[list[str]] = None,
         generated_sql: Optional[str] = None,
+        observation: Optional[Any] = None,
     ) -> float:
         """Evaluate whether generated SQL adheres to expected filters (Grounding Score: 0.0 or 1.0)."""
         if not expected_filters or not generated_sql:
@@ -154,13 +155,17 @@ class LakehouseTelemetry:
         if trace and self.is_active and self.client:
             try:
                 trace_id = getattr(trace, "id", None) or getattr(trace, "trace_id", None)
+                obs_id = getattr(observation, "id", None) if observation else None
                 if trace_id:
-                    self.client.create_score(
-                        name=name,
-                        value=score,
-                        trace_id=trace_id,
-                        comment="All filters grounded" if score == 1.0 else f"Dropped filters: {missing}",
-                    )
+                    score_args = {
+                        "name": name,
+                        "value": score,
+                        "trace_id": trace_id,
+                        "comment": "All business filters grounded" if score == 1.0 else f"Dropped filters: {missing}",
+                    }
+                    if obs_id:
+                        score_args["observation_id"] = obs_id
+                    self.client.create_score(**score_args)
             except Exception as e:
                 print(f"⚠️ [Langfuse Telemetry] Failed to log score: {e}")
 
