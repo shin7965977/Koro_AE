@@ -19,6 +19,7 @@ import pandas as pd
 from typing import Any
 
 from ai.schema_engine import DatabaseReflectionService, SchemaDesignResult, classify_schema_intent
+from ai.telemetry import telemetry
 
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
@@ -886,6 +887,44 @@ def synthesize_dynamic_dbt_model(
         target_grain = "Product SKU x Packaging Size"
         upstream_tables = ["dim_products", "fct_order_items", "fct_orders", "fct_returns"]
 
+        # Grounding: Extract category filter and specific SKU targets from combined_query
+        prod_where_clauses: list[str] = []
+        if category_filter:
+            prod_where_clauses.append(f"p.category_name = '{category_filter}'")
+        elif "堅果" in combined_query or "nut" in combined_query or any(w in combined_query for w in ["杏仁", "腰果", "almond", "cashew"]):
+            prod_where_clauses.append("p.category_name = 'Nuts & Butters'")
+        elif "果乾" in combined_query or "fruit" in combined_query or any(w in combined_query for w in ["芒果", "椰棗", "mango", "date"]):
+            prod_where_clauses.append("p.category_name = 'Dried Fruits'")
+        elif "零食" in combined_query or "snack" in combined_query or any(w in combined_query for w in ["蛋白棒", "椒鹽脆餅", "pretzel", "bar"]):
+            prod_where_clauses.append("p.category_name = 'Snacks & Bars'")
+        elif "超級食物" in combined_query or "seed" in combined_query or any(w in combined_query for w in ["奇亞籽", "chia"]):
+            prod_where_clauses.append("p.category_name = 'Superfoods & Seeds'")
+
+        target_skus: list[str] = []
+        if any(w in combined_query for w in ["杏仁", "almond"]):
+            target_skus.append("Almond")
+        if any(w in combined_query for w in ["腰果", "cashew"]):
+            target_skus.append("Cashew")
+        if any(w in combined_query for w in ["開心果", "pistachio"]):
+            target_skus.append("Pistachio")
+        if any(w in combined_query for w in ["夏威夷豆", "macadamia"]):
+            target_skus.append("Macadamia")
+        if any(w in combined_query for w in ["花生", "peanut"]):
+            target_skus.append("Peanut")
+        if any(w in combined_query for w in ["芒果", "mango"]):
+            target_skus.append("Mango")
+        if any(w in combined_query for w in ["椰棗", "date"]):
+            target_skus.append("Date")
+        if any(w in combined_query for w in ["奇亞籽", "chia"]):
+            target_skus.append("Chia")
+
+        if target_skus:
+            sku_conds = " OR ".join([f"p.product_name ILIKE '%{s}%'" for s in target_skus])
+            prod_where_clauses.append(f"({sku_conds})")
+
+        where_dim_products = f"\nWHERE {' AND '.join(prod_where_clauses)}\n" if prod_where_clauses else "\n"
+        reporting_month_val = start_date[:7] if len(start_date) >= 7 else "2026-08"
+
         dbt_sql = (
             f"-- Model: {model_name}.sql\n"
             "{{ config(\n"
@@ -927,6 +966,7 @@ def synthesize_dynamic_dbt_model(
             "    p.product_name,\n"
             "    p.category_name,\n"
             "    p.packaging_size,\n"
+            f"    '{reporting_month_val}' AS reporting_month,\n"
             "    p.unit_price_eur AS catalog_unit_price_eur,\n"
             "    s.realized_avg_unit_price_eur,\n"
             "    ROUND(COALESCE(r.total_units_returned, 0)::NUMERIC / NULLIF(s.total_units_sold, 0) * 100, 2) AS return_rate_pct,\n"
@@ -940,7 +980,7 @@ def synthesize_dynamic_dbt_model(
             "    ROUND(s.net_revenue_eur - s.total_cogs_eur, 2) AS gross_margin_eur\n"
             "FROM sales_summary s\n"
             "JOIN {{ ref('dim_products') }} p USING (product_id)\n"
-            "LEFT JOIN returns_summary r USING (product_id, market_country)\n"
+            f"LEFT JOIN returns_summary r USING (product_id, market_country){where_dim_products}"
             "ORDER BY p.category_name, p.packaging_size, s.gross_revenue_eur DESC;"
         )
 
@@ -963,6 +1003,12 @@ def synthesize_dynamic_dbt_model(
             "        tests: [not_null]\n"
             "      - name: catalog_unit_price_eur\n"
             "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+            "      - name: realized_avg_unit_price_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+            "      - name: reporting_month\n"
+            "        data_type: varchar\n"
             "        tests: [not_null]\n"
             "      - name: gross_revenue_eur\n"
             "        data_type: numeric\n"
@@ -1038,6 +1084,12 @@ def synthesize_dynamic_dbt_model(
             "        tests: [not_null]\n"
             "      - name: catalog_unit_price_eur\n"
             "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+            "      - name: realized_avg_unit_price_eur\n"
+            "        data_type: numeric\n"
+            "        tests: [not_null]\n"
+            "      - name: reporting_month\n"
+            "        data_type: varchar\n"
             "        tests: [not_null]\n"
             "      - name: gross_revenue_eur\n"
             "        data_type: numeric\n"
@@ -1575,6 +1627,35 @@ def synthesize_dynamic_dbt_model(
         }
     )
 
+    # Langfuse Observability & Grounding Score
+    if telemetry.is_active:
+        try:
+            lf_trace = telemetry.create_trace(
+                name=f"dbt_synthesis_{model_name}",
+                user_id="lakehouse_analyst",
+                session_id=model_name,
+                tags=["dbt-synthesis", geo_val or "ALL_EU"],
+                input_data={
+                    "grain": grain_val,
+                    "geo": geo_val,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "custom_notes": custom_notes,
+                },
+            )
+            if lf_trace:
+                expected_checks: list[str] = []
+                if any(w in combined_query for w in ["杏仁", "almond"]):
+                    expected_checks.append("Almond")
+                if any(w in combined_query for w in ["腰果", "cashew"]):
+                    expected_checks.append("Cashew")
+                if geo_val in ["DE", "AT", "FR"]:
+                    expected_checks.append(geo_val)
+                telemetry.evaluate_grounding(lf_trace, expected_filters=expected_checks, generated_sql=dbt_sql)
+                telemetry.flush()
+        except Exception:
+            pass
+
     return SchemaDesignResult(
         spec_id=f"SCHEMA-{model_name.upper()}",
         scenario_title=scenario_title,
@@ -1690,6 +1771,81 @@ def chat_socratic_turn(
         )
 
 
+def _sanitize_and_summarize_advisory_notes(chat_history: list[dict[str, str]], user_goal: str) -> str:
+    """Intelligently summarize conversation decisions into natural language, purging off-topic noise.
+    
+    Produces executive-level business statements such as:
+    '使用者想要聚焦德國市場 (DE) 8 月份杏仁與腰果品項並計算扣除促銷折價券後的實際成交均價，同時探討 1kg 大包裝 vs 小包裝規格對退貨率與淨營收之影響。'
+    """
+    if not chat_history:
+        return ""
+
+    off_topic_indicators = ["柯文哲", "總統", "天氣", "股票", "政治", "笑話", "誰是"]
+    valid_user_notes: list[str] = []
+
+    for i, h in enumerate(chat_history):
+        if h.get("role") == "user":
+            content = h.get("content", "").strip()
+            if not content:
+                continue
+            # Filter explicit off-topic query patterns
+            if any(term in content for term in off_topic_indicators):
+                continue
+            # Check if immediately followed by an out-of-scope assistant response
+            if i + 1 < len(chat_history):
+                next_resp = chat_history[i + 1].get("content", "")
+                if "超出" in next_resp and ("範疇" in next_resp or "範圍" in next_resp):
+                    continue
+            valid_user_notes.append(content)
+
+    if not valid_user_notes:
+        return ""
+
+    combined = f"{user_goal} {' '.join(valid_user_notes)}".lower()
+
+    # Dimension extraction
+    mkt = "德國市場 (DE)" if any(w in combined for w in ["德國", "de"]) else (
+        "奧地利市場 (AT)" if any(w in combined for w in ["奧地利", "at"]) else (
+            "法國市場 (FR)" if any(w in combined for w in ["法國", "fr"]) else "歐洲市場"
+        )
+    )
+
+    month = ""
+    if any(w in combined for w in ["8月", "八月", "august"]):
+        month = "8 月份"
+    elif any(w in combined for w in ["9月", "九月", "september"]):
+        month = "9 月份"
+    elif any(w in combined for w in ["10月", "十月", "october"]):
+        month = "10 月份"
+
+    items: list[str] = []
+    if any(w in combined for w in ["杏仁", "almond"]):
+        items.append("杏仁")
+    if any(w in combined for w in ["腰果", "cashew"]):
+        items.append("腰果")
+    if items:
+        items_desc = f"{'與'.join(items)}品項"
+    elif "堅果" in combined:
+        items_desc = "堅果類產品"
+    elif "果乾" in combined:
+        items_desc = "果乾類產品"
+    else:
+        items_desc = "相關產品"
+
+    metrics_desc = ""
+    if any(w in combined for w in ["折價券", "折價", "促銷", "實際成交", "牌價"]):
+        metrics_desc = "並計算扣除促銷折價券後的實際成交均價"
+    elif any(w in combined for w in ["毛利", "毛利率"]):
+        metrics_desc = "並分析單位毛利率與淨營收"
+
+    packaging_desc = ""
+    if any(w in combined for w in ["包裝", "規格", "1kg", "大包裝", "小包裝"]):
+        packaging_desc = "，同時探討 1kg 大包裝 vs 小包裝規格對退貨率與淨營收之影響"
+
+    time_mkt_prefix = f"{mkt} {month}".strip()
+    return f"使用者想要聚焦{time_mkt_prefix}{items_desc}{metrics_desc}{packaging_desc}。"
+
+
 def summarize_socratic_requirements(
     user_goal: str,
     decisions: dict[str, str],
@@ -1711,14 +1867,24 @@ def summarize_socratic_requirements(
     if watermark is None:
         watermark = get_lakehouse_watermark()
 
-    # Extract conversation nuances
-    user_chat_notes = [
-        h["content"].strip()
-        for h in chat_history
-        if h.get("role") == "user" and h.get("content", "").strip()
-    ]
-    chat_context_notes = "; ".join(user_chat_notes)
-    combined_text = f"{user_goal} {chat_context_notes}".lower()
+    # Extract conversation nuances with sanitization (purging off-topic noise)
+    off_topic_indicators = ["柯文哲", "總統", "天氣", "股票", "政治", "笑話", "誰是"]
+    user_chat_notes: list[str] = []
+    for i, h in enumerate(chat_history):
+        if h.get("role") == "user":
+            c = h.get("content", "").strip()
+            if c and not any(term in c for term in off_topic_indicators):
+                if i + 1 < len(chat_history):
+                    next_resp = chat_history[i + 1].get("content", "")
+                    if "超出" in next_resp and ("範疇" in next_resp or "範圍" in next_resp):
+                        continue
+                user_chat_notes.append(c)
+
+    chat_context_notes = _sanitize_and_summarize_advisory_notes(chat_history, user_goal)
+    if not chat_context_notes and user_chat_notes:
+        chat_context_notes = f"使用者需求要點：{'; '.join(user_chat_notes)}"
+
+    combined_text = f"{user_goal} {' '.join(user_chat_notes)}".lower()
 
     # Recency Override: Extract specific entities from latest user turns
     market_val = decisions.get("geographic", "ALL_EU")

@@ -621,6 +621,69 @@ def test_no_silent_override_when_chat_notes_contain_de_but_user_specifies_explic
     assert not (result.data_preview["market_country"] == "DE").any()
 
 
+def test_off_topic_noise_purged_and_natural_language_summary() -> None:
+    """Verify that off-topic inquiries (e.g. '柯文哲是誰') are purged and natural language summary is synthesized."""
+    user_goal = "我想分析產品價格跟營收的關係，還有退貨情況"
+    chat_history = [
+        {"role": "user", "content": "我們有不同包裝規格嗎？1kg 大包裝跟小包裝的單價差異會不會影響退貨？"},
+        {"role": "assistant", "content": "是的，我們有各種包裝規格..."},
+        {"role": "user", "content": "柯文哲是誰"},
+        {"role": "assistant", "content": "您好！我是 KoRo Lakehouse 的數據分析工程師。這超出解析 KoRo Lakehouse 業務數據的範疇。"},
+        {"role": "user", "content": "我想看扣除促銷折價券之後的實際成交單價，而不是只有牌價。"},
+        {"role": "user", "content": "德國市場"},
+        {"role": "user", "content": "產品類別"},
+        {"role": "user", "content": "杏仁跟腰果就好"},
+        {"role": "user", "content": "以月為單位"},
+        {"role": "user", "content": "我只要八月就好"},
+    ]
+    decisions = {"geographic": "DE", "temporal": "2026-08"}
+
+    memo = summarize_socratic_requirements(user_goal, decisions, chat_history)
+
+    notes = memo["chat_context_notes"]
+    # 1. Invariant: Off-topic query MUST NOT appear
+    assert "柯文哲" not in notes
+    assert "誰是" not in notes
+
+    # 2. Invariant: Natural language summary synthesizes key business constraints
+    assert "德國市場 (DE)" in notes
+    assert "8 月份" in notes
+    assert "杏仁與腰果品項" in notes
+    assert "實際成交均價" in notes
+    assert "1kg 大包裝 vs 小包裝規格對退貨率與淨營收之影響" in notes
+
+
+def test_dynamic_synthesis_filters_almond_and_cashews_in_sql() -> None:
+    """Verify that when Almond & Cashew are specified, SQL filters WHERE p.product_name ILIKE and only returns matching SKUs."""
+    user_goal = "我想分析產品價格跟營收的關係，還有退貨情況"
+    decisions = {
+        "geographic": "DE",
+        "temporal": "2026-08-03:2026-08-31",
+        "focus_entity": "pricing_returns_fusion",
+        "custom_chat_notes": "custom:使用者想要聚焦德國市場 (DE) 8 月份杏仁與腰果品項並計算扣除促銷折價券後的實際成交均價",
+    }
+
+    result = synthesize_dynamic_dbt_model(user_goal, decisions)
+
+    assert result.is_rejected is False
+    assert result.dry_run_success is True
+    # Invariant: SQL must contain dynamic WHERE clauses for Almond & Cashew
+    assert "p.category_name = 'Nuts & Butters'" in result.dbt_sql
+    assert "p.product_name ILIKE '%Almond%'" in result.dbt_sql
+    assert "p.product_name ILIKE '%Cashew%'" in result.dbt_sql
+    assert "reporting_month" in result.dbt_sql
+
+    # Invariant: DuckDB Dry-Run output must ONLY contain Almond & Cashew (2 SKUs), NEVER 12 SKUs with mango strips
+    df = result.data_preview
+    assert len(df) == 2
+    assert set(df["product_id"]) == {"KORO-NUT-001", "KORO-NUT-004"}
+    assert "Brooks Mango Strips" not in list(df["product_name"])
+    assert "Vegan Protein Bar" not in list(df["product_name"])
+    assert (df["category_name"] == "Nuts & Butters").all()
+    assert (df["reporting_month"] == "2026-08").all()
+
+
+
 
 
 
