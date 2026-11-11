@@ -6,6 +6,9 @@
 [![Elementary](https://img.shields.io/badge/Elementary-Data_Observability-FF4081.svg?style=for-the-badge&logo=elementary&logoColor=white)](https://www.elementary-data.com/)
 [![Langfuse](https://img.shields.io/badge/Langfuse-LLM_Observability-000000.svg?style=for-the-badge&logo=langfuse&logoColor=white)](https://cloud.langfuse.com/)
 
+> 🌐 **Live Interactive Demo (Zero-Setup)**: [https://koroae-emnrmedur9bkudgaygri4f.streamlit.app/](https://koroae-emnrmedur9bkudgaygri4f.streamlit.app/)  
+> *Experience the live Lakehouse Cockpit, Socratic AE Copilot, and physical DuckDB dry-runs directly in your browser without local installation.*
+
 ---
 
 ### 💡 What Problem Does This POC Solve? (The Executive Storyline)
@@ -110,7 +113,13 @@ flowchart LR
 
 ## 🚀 Quickstart
 
-### 1. Clone & Setup Environment
+### 🌐 Instant Cloud Access (Zero Installation)
+Access the live deployed Lakehouse Cockpit & AI Copilot directly on Streamlit Community Cloud:  
+👉 **[Launch Streamlit Demo (https://koroae-emnrmedur9bkudgaygri4f.streamlit.app/)](https://koroae-emnrmedur9bkudgaygri4f.streamlit.app/)**
+
+### 💻 Local Development Setup
+
+#### 1. Clone & Setup Environment
 ```bash
 git clone https://github.com/your-org/koro-analytics-engineering-poc.git
 cd koro-analytics-engineering-poc
